@@ -1,0 +1,16 @@
+{
+  "name": "screenslate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ScreenSlate — pencil, arrow pointer, highlighter, shapes, text and laser/spotlight annotation overlay for screen-sharing.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.3"
+  }
+}
