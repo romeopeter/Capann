@@ -17,7 +17,7 @@ for (const file of readdirSync(path.join(root, 'icons'))) {
 
 const entryPoints = {
   'background/service-worker': path.join(root, 'src/background/service-worker.ts'),
-  'content/overlay': path.join(root, 'src/content/overlay.ts'),
+  'content/overlay': path.join(root, 'src/content/overlay.tsx'),
 };
 
 const options = {
@@ -28,6 +28,8 @@ const options = {
   target: 'chrome102',
   sourcemap: 'inline',
   logLevel: 'info',
+  jsx: 'automatic',
+  jsxDev: false,
 };
 
 if (watch) {
