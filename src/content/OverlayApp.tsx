@@ -12,7 +12,7 @@ import type {
 import { STORAGE_KEY_PREFIX } from '../shared/types';
 import { findTopmostHit } from './geometry';
 import { drawAnnotation, redrawAll } from './render';
-import { Toolbar, TOOLBAR_STYLES } from './toolbar';
+import { Toolbar } from './toolbar';
 import { ShadowRootContext } from './overlay';
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
@@ -44,11 +44,13 @@ export function OverlayApp() {
   const [tabId, setTabId] = useState(-1);
   const [drawModeEnabled, setDrawModeEnabled] = useState(false);
   const [tool, setTool] = useState<ToolId>('pencil');
-  const [color, setColor] = useState('#ef4444');
+  const [color, setColor] = useState('#A78BFA');
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [headStyle, setHeadStyle] = useState<ArrowHeadStyle>('triangle');
   const [filled, setFilled] = useState(false);
   const [objects, setObjects] = useState<AnnotationObject[]>([]);
+  const [undoStack, setUndoStack] = useState<AnnotationObject[][]>([]);
+  const [undoneCount, setUndoneCount] = useState(0);
   const [statusText, setStatusText] = useState('');
 
   const currentPointsRef = useRef<Point[] | null>(null);
@@ -412,6 +414,35 @@ export function OverlayApp() {
     setStatusText(`Tool: ${next}`);
   }, [tool]);
 
+  const pushUndo = useCallback(() => {
+    setUndoStack((stack) => [...stack, objects]);
+    setUndoneCount(0);
+  }, [objects]);
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0 || undoneCount >= undoStack.length) return;
+    const newUndoneCount = undoneCount + 1;
+    const historyState = undoStack[undoStack.length - newUndoneCount];
+    if (historyState) {
+      setObjects(historyState);
+      setUndoneCount(newUndoneCount);
+    }
+  }, [undoStack, undoneCount]);
+
+  const handleRedo = useCallback(() => {
+    if (undoneCount === 0) return;
+    const newUndoneCount = undoneCount - 1;
+    if (newUndoneCount === 0) {
+      setObjects(objects);
+    } else {
+      const historyState = undoStack[undoStack.length - newUndoneCount];
+      if (historyState) {
+        setObjects(historyState);
+      }
+    }
+    setUndoneCount(newUndoneCount);
+  }, [undoStack, undoneCount, objects]);
+
   const savePng = useCallback(async () => {
     setStatusText('Capturing...');
     try {
@@ -571,7 +602,6 @@ export function OverlayApp() {
 
   return (
     <>
-      <style>{TOOLBAR_STYLES}</style>
       <style>{`
         .canvas-wrapper {
           position: fixed;
@@ -608,6 +638,10 @@ export function OverlayApp() {
         onClear={handleClear}
         onSavePng={savePng}
         onDrawModeToggle={handleDrawModeToggle}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={undoStack.length > 0 && undoneCount < undoStack.length}
+        canRedo={undoneCount > 0}
         drawModeEnabled={drawModeEnabled}
         currentTool={tool}
         currentColor={color}
