@@ -1,3 +1,19 @@
+/**
+ * toolbar.tsx
+ *
+ * Floating annotation toolbar component with expand/collapse animation.
+ * Implements the Claude Design system with frosted glass aesthetics.
+ *
+ * Key features:
+ * - Expand/collapse animation (56px circle ↔ 216px rounded panel)
+ * - Tool selection grid (6-col main tools + 3-col extra tools)
+ * - Color picker with core/extra swatches
+ * - Stroke size slider
+ * - Undo/redo controls
+ * - Session add-ons: countdown timer and screen mask
+ * - Staggered row animations on expand
+ */
+
 import { useState, useEffect, useRef } from 'react';
 import type { ArrowHeadStyle, ToolId } from '../shared/types';
 import { TOOL_LABELS } from '../shared/types';
@@ -10,6 +26,14 @@ const CORE_COLORS = ['#A78BFA', '#86EFAC', '#F5E8A6', '#0A0A0C', '#FFFFFF'];
 const EXTRA_COLORS = ['#7C5CE6', '#4ADE80', '#E7CF6E', '#8B8B93', '#26262B'];
 
 const TIMER_PRESETS = [5, 10, 15]; // minutes
+
+const HEAD_STYLES: { id: ArrowHeadStyle; label: string }[] = [
+  { id: 'triangle', label: 'Triangle' },
+  { id: 'chevron', label: 'Chevron' },
+  { id: 'stick', label: 'Stick' },
+];
+
+const SHAPE_TOOLS: ToolId[] = ['rectangle', 'ellipse'];
 
 export interface ToolbarProps {
   onToolChange: (tool: ToolId) => void;
@@ -54,7 +78,7 @@ export function Toolbar({
   currentFilled,
   statusText = '',
 }: ToolbarProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [moreColors, setMoreColors] = useState(false);
   const [timerOn, setTimerOn] = useState(false);
   const [maskOn, setMaskOn] = useState(false);
@@ -62,6 +86,13 @@ export function Toolbar({
   const [seconds, setSeconds] = useState(754);
 
   const timerRef = useRef<number | undefined>(undefined);
+
+  // Activating the extension (icon click / Alt+Shift+S) opens the panel so the
+  // tools are visible straight away. Collapsing later stays collapsed, since
+  // this only fires on the false -> true transition.
+  useEffect(() => {
+    if (drawModeEnabled) setExpanded(true);
+  }, [drawModeEnabled]);
 
   useEffect(() => {
     if (timerOn) {
@@ -131,6 +162,32 @@ export function Toolbar({
   const UNDO_ICON = 'M9 7L5 11l4 4M5 11h8a5 5 0 010 10h-3';
   const REDO_ICON = 'M15 7l4 4-4 4M19 11h-8a5 5 0 000 10h3';
 
+  /** A tool only counts as active while draw mode is on. */
+  const isToolActive = (t: ToolId) => drawModeEnabled && currentTool === t;
+
+  const handleToolSelect = (tool: ToolId) => {
+    // Clicking the active tool deselects it: annotations stay on screen but
+    // pointer events go back to the page underneath.
+    if (isToolActive(tool)) {
+      onDrawModeToggle(false);
+      return;
+    }
+    onToolChange(tool);
+    // Auto-enable draw mode when a drawing tool is selected
+    if (!drawModeEnabled) {
+      onDrawModeToggle(true);
+    }
+    // Expand toolbar to show full controls
+    if (!expanded) {
+      setExpanded(true);
+    }
+  };
+
+  const handleCollapse = (e: React.MouseEvent) => {
+    collapsePanel(e);
+    // Don't disable draw mode - user might want toolbar collapsed while drawing
+  };
+
   return (
     <>
       {/* Timer chip (bottom-left) */}
@@ -150,7 +207,9 @@ export function Toolbar({
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
             border: '1px solid rgba(255,255,255,0.08)',
-            zIndex: 2147483646,
+            // Must clear the annotation canvas (2147483646); on a tie the
+            // later-rendered canvas wins and swallows clicks on the × button.
+            zIndex: 2147483647,
           }}
         >
           <i
@@ -206,7 +265,9 @@ export function Toolbar({
             position: 'fixed',
             left: timerOn ? '220px' : '56px',
             bottom: '44px',
-            zIndex: 2147483646,
+            // Same reason as the timer chip: must sit above the canvas to stay
+            // clickable while a capturing tool is active.
+            zIndex: 2147483647,
           }}
         >
           <button
@@ -319,10 +380,10 @@ export function Toolbar({
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   font: '500 13px/1 Manrope,system-ui,sans-serif',
-                  color: '#F5F5F7',
+                  color: drawModeEnabled ? '#F5F5F7' : '#8B8B93',
                 }}
               >
-                {TOOL_LABELS[currentTool]}
+                {drawModeEnabled ? TOOL_LABELS[currentTool] : 'No tool'}
               </span>
               <button
                 onClick={() => onUndo?.()}
@@ -379,7 +440,7 @@ export function Toolbar({
                 </svg>
               </button>
               <button
-                onClick={collapsePanel}
+                onClick={handleCollapse}
                 title="Collapse"
                 style={{
                   width: '26px',
@@ -421,7 +482,7 @@ export function Toolbar({
               {MAIN_TOOLS.map((tool) => (
                 <button
                   key={tool}
-                  onClick={() => onToolChange(tool)}
+                  onClick={() => handleToolSelect(tool)}
                   title={TOOL_LABELS[tool]}
                   style={{
                     height: '30px',
@@ -431,19 +492,19 @@ export function Toolbar({
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
-                    background: currentTool === tool ? 'rgba(167,139,250,0.18)' : 'transparent',
+                    background: isToolActive(tool) ? 'rgba(167,139,250,0.18)' : 'transparent',
                   }}
                   onMouseEnter={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = '#26262B';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = '#26262B';
                   }}
                   onMouseLeave={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = 'transparent';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = 'transparent';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path
                       d={TOOL_ICONS[tool]}
-                      stroke={currentTool === tool ? '#A78BFA' : '#8B8B93'}
+                      stroke={isToolActive(tool) ? '#A78BFA' : '#8B8B93'}
                       strokeWidth="1.7"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -466,7 +527,7 @@ export function Toolbar({
               {EXTRA_TOOLS.map((tool) => (
                 <button
                   key={tool}
-                  onClick={() => onToolChange(tool)}
+                  onClick={() => handleToolSelect(tool)}
                   title={TOOL_LABELS[tool]}
                   style={{
                     height: '30px',
@@ -476,19 +537,19 @@ export function Toolbar({
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
-                    background: currentTool === tool ? 'rgba(167,139,250,0.18)' : 'transparent',
+                    background: isToolActive(tool) ? 'rgba(167,139,250,0.18)' : 'transparent',
                   }}
                   onMouseEnter={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = '#26262B';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = '#26262B';
                   }}
                   onMouseLeave={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = 'transparent';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = 'transparent';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path
                       d={TOOL_ICONS[tool]}
-                      stroke={currentTool === tool ? '#A78BFA' : '#8B8B93'}
+                      stroke={isToolActive(tool) ? '#A78BFA' : '#8B8B93'}
                       strokeWidth="1.7"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -602,7 +663,7 @@ export function Toolbar({
               <input
                 type="range"
                 min="1"
-                max="8"
+                max="100"
                 value={currentWidth}
                 onChange={(e) => onWidthChange(Number(e.target.value))}
                 style={{ flex: 1, accentColor: '#A78BFA', height: '4px' }}
@@ -612,13 +673,106 @@ export function Toolbar({
                   font: '500 11px/1 Manrope,system-ui,sans-serif',
                   color: '#8B8B93',
                   fontVariantNumeric: 'tabular-nums',
-                  minWidth: '14px',
+                  minWidth: '22px',
                   textAlign: 'right',
                 }}
               >
                 {currentWidth}
               </span>
             </div>
+
+            {/* Arrow head style — only meaningful for the arrow tool */}
+            {isToolActive('arrow') && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '7px',
+                  animation: 'rowIn 140ms cubic-bezier(0.2,0.8,0.2,1) both',
+                }}
+              >
+                <span
+                  style={{
+                    font: '500 11px/1 Manrope,system-ui,sans-serif',
+                    color: '#8B8B93',
+                    paddingLeft: '4px',
+                  }}
+                >
+                  Arrow head
+                </span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {HEAD_STYLES.map((h) => (
+                    <button
+                      key={h.id}
+                      onClick={() => onHeadStyleChange(h.id)}
+                      title={h.label}
+                      style={{
+                        flex: 1,
+                        height: '26px',
+                        padding: 0,
+                        borderRadius: '999px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        font: '500 11px/1 Manrope,system-ui,sans-serif',
+                        background:
+                          currentHeadStyle === h.id ? 'rgba(167,139,250,0.18)' : 'transparent',
+                        color: currentHeadStyle === h.id ? '#A78BFA' : '#8B8B93',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (currentHeadStyle !== h.id) e.currentTarget.style.background = '#26262B';
+                      }}
+                      onMouseLeave={(e) => {
+                        if (currentHeadStyle !== h.id)
+                          e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      {h.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Shape fill — only meaningful for rectangle / ellipse */}
+            {SHAPE_TOOLS.some(isToolActive) && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '0 4px',
+                  animation: 'rowIn 140ms cubic-bezier(0.2,0.8,0.2,1) both',
+                }}
+              >
+                <span
+                  style={{
+                    flex: 1,
+                    font: '400 12px/1 Manrope,system-ui,sans-serif',
+                    color: '#F5F5F7',
+                  }}
+                >
+                  Fill shape
+                </span>
+                <button
+                  onClick={() => onFilledChange(!currentFilled)}
+                  aria-pressed={currentFilled}
+                  style={{
+                    height: '24px',
+                    padding: '0 11px',
+                    borderRadius: '999px',
+                    cursor: 'pointer',
+                    font: '500 11px/1 Manrope,system-ui,sans-serif',
+                    background: currentFilled ? 'rgba(167,139,250,0.18)' : 'transparent',
+                    border: currentFilled
+                      ? '1px solid rgba(167,139,250,0.55)'
+                      : '1px solid rgba(255,255,255,0.15)',
+                    color: currentFilled ? '#A78BFA' : '#F5F5F7',
+                  }}
+                >
+                  {currentFilled ? 'On' : 'Off'}
+                </button>
+              </div>
+            )}
 
             {/* Session add-ons */}
             {needsSetup && (
@@ -653,7 +807,8 @@ export function Toolbar({
                         paddingLeft: '4px',
                       }}
                     >
-                      Countdown
+                      {/* Countdown */}
+                      Timer
                     </span>
                     {TIMER_PRESETS.map((mins) => (
                       <button
@@ -757,6 +912,20 @@ export function Toolbar({
                 Save
               </button>
             </div>
+
+            {/* Transient feedback: "Saved!", "Cleared", "Save failed" */}
+            {statusText && (
+              <div
+                style={{
+                  font: '400 11px/1 Manrope,system-ui,sans-serif',
+                  color: '#8B8B93',
+                  textAlign: 'center',
+                  animation: 'rowIn 140ms cubic-bezier(0.2,0.8,0.2,1) both',
+                }}
+              >
+                {statusText}
+              </div>
+            )}
           </div>
         )}
       </div>

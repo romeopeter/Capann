@@ -1,3 +1,16 @@
+/**
+ * service-worker.ts
+ *
+ * Chrome extension background service worker (Manifest V3).
+ * Handles keyboard shortcuts, extension icon, tab communication, and screenshot capture.
+ *
+ * Key responsibilities:
+ * - Command handling: Alt+Shift+S (toggle), Alt+Shift+T (cycle tool), Alt+Shift+C (clear)
+ * - Extension icon management and click handling
+ * - Tab ↔ background message routing (tab ID lookup, screenshot capture, downloads)
+ * - Chrome storage session access configuration
+ */
+
 import type {
   BackgroundToContentMessage,
   ContentToBackgroundMessage,

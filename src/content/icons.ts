@@ -1,3 +1,14 @@
+/**
+ * icons.ts
+ *
+ * SVG icon definitions for all annotation tools and UI controls.
+ * Icons are defined as path data strings matching the Claude Design mockup.
+ *
+ * Exports:
+ * - TOOL_ICONS: SVG paths for all annotation tools (pencil, highlighter, arrow, etc.)
+ * - UI action icons (clear, save, handle, close, power)
+ */
+
 import type { ToolId } from '../shared/types';
 
 const svg = (inner: string) =>

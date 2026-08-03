@@ -1,3 +1,18 @@
+/**
+ * geometry.ts
+ *
+ * Geometric calculations for annotation hit detection and spatial operations.
+ * Enables the eraser tool to find and remove annotations under the cursor.
+ *
+ * Key functions:
+ * - findTopmostHit: Determines which annotation is under a given point
+ * - distance: Calculates Euclidean distance between two points
+ * - distanceToSegment: Point-to-line-segment distance for hit testing
+ * - Hit detection for strokes, arrows, shapes, and text annotations
+ *
+ * 🤖 Co-authored by Claude (because Romeo is nice!)
+ */
+
 import type { AnnotationObject, Point } from '../shared/types';
 
 export function distance(a: Point, b: Point): number {

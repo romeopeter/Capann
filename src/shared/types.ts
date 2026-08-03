@@ -1,3 +1,16 @@
+/**
+ * types.ts
+ *
+ * Shared TypeScript type definitions for ScreenSlate.
+ * Central type system used across content scripts and background service worker.
+ *
+ * Key types:
+ * - AnnotationObject: Union type for all annotation kinds (stroke, arrow, shape, text)
+ * - ToolId: All available annotation tools
+ * - Message types: Content ↔ Background communication contracts
+ * - TabAnnotationState: Per-tab storage schema
+ */
+
 export interface Point {
   x: number;
   y: number;

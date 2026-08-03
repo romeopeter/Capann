@@ -1,3 +1,16 @@
+/**
+ * render.ts
+ *
+ * Canvas rendering engine for all annotation types.
+ * Handles drawing strokes, arrows, shapes, and text to the HTML5 canvas.
+ *
+ * Key functions:
+ * - drawAnnotation: Renders a single annotation object
+ * - redrawAll: Clears and redraws the entire annotation layer
+ * - Specialized renderers for each annotation type (stroke, arrow, shape, text)
+ * - Arrow head rendering with multiple style options (triangle, chevron, stick)
+ */
+
 import type {
   AnnotationObject,
   ArrowAnnotation,

@@ -1,3 +1,20 @@
+/**
+ * build.mjs
+ *
+ * esbuild-based bundler for ScreenSlate Chrome extension.
+ * Compiles TypeScript + React (JSX) to browser-compatible JavaScript.
+ *
+ * Usage:
+ * - `npm run build`: Production build to dist/
+ * - `npm run watch`: Development mode with auto-rebuild on file changes
+ *
+ * Key features:
+ * - TypeScript → JavaScript compilation
+ * - React JSX transformation (automatic runtime)
+ * - Bundle splitting (background service worker + content script)
+ * - Manifest and icon copying
+ */
+
 import { build, context } from 'esbuild';
 import { mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
