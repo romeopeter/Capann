@@ -162,7 +162,16 @@ export function Toolbar({
   const UNDO_ICON = 'M9 7L5 11l4 4M5 11h8a5 5 0 010 10h-3';
   const REDO_ICON = 'M15 7l4 4-4 4M19 11h-8a5 5 0 000 10h3';
 
+  /** A tool only counts as active while draw mode is on. */
+  const isToolActive = (t: ToolId) => drawModeEnabled && currentTool === t;
+
   const handleToolSelect = (tool: ToolId) => {
+    // Clicking the active tool deselects it: annotations stay on screen but
+    // pointer events go back to the page underneath.
+    if (isToolActive(tool)) {
+      onDrawModeToggle(false);
+      return;
+    }
     onToolChange(tool);
     // Auto-enable draw mode when a drawing tool is selected
     if (!drawModeEnabled) {
@@ -198,7 +207,9 @@ export function Toolbar({
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
             border: '1px solid rgba(255,255,255,0.08)',
-            zIndex: 2147483646,
+            // Must clear the annotation canvas (2147483646); on a tie the
+            // later-rendered canvas wins and swallows clicks on the × button.
+            zIndex: 2147483647,
           }}
         >
           <i
@@ -254,7 +265,9 @@ export function Toolbar({
             position: 'fixed',
             left: timerOn ? '220px' : '56px',
             bottom: '44px',
-            zIndex: 2147483646,
+            // Same reason as the timer chip: must sit above the canvas to stay
+            // clickable while a capturing tool is active.
+            zIndex: 2147483647,
           }}
         >
           <button
@@ -367,10 +380,10 @@ export function Toolbar({
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   font: '500 13px/1 Manrope,system-ui,sans-serif',
-                  color: '#F5F5F7',
+                  color: drawModeEnabled ? '#F5F5F7' : '#8B8B93',
                 }}
               >
-                {TOOL_LABELS[currentTool]}
+                {drawModeEnabled ? TOOL_LABELS[currentTool] : 'No tool'}
               </span>
               <button
                 onClick={() => onUndo?.()}
@@ -479,19 +492,19 @@ export function Toolbar({
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
-                    background: currentTool === tool ? 'rgba(167,139,250,0.18)' : 'transparent',
+                    background: isToolActive(tool) ? 'rgba(167,139,250,0.18)' : 'transparent',
                   }}
                   onMouseEnter={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = '#26262B';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = '#26262B';
                   }}
                   onMouseLeave={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = 'transparent';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = 'transparent';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path
                       d={TOOL_ICONS[tool]}
-                      stroke={currentTool === tool ? '#A78BFA' : '#8B8B93'}
+                      stroke={isToolActive(tool) ? '#A78BFA' : '#8B8B93'}
                       strokeWidth="1.7"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -524,19 +537,19 @@ export function Toolbar({
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
-                    background: currentTool === tool ? 'rgba(167,139,250,0.18)' : 'transparent',
+                    background: isToolActive(tool) ? 'rgba(167,139,250,0.18)' : 'transparent',
                   }}
                   onMouseEnter={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = '#26262B';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = '#26262B';
                   }}
                   onMouseLeave={(e) => {
-                    if (currentTool !== tool) e.currentTarget.style.background = 'transparent';
+                    if (!isToolActive(tool)) e.currentTarget.style.background = 'transparent';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path
                       d={TOOL_ICONS[tool]}
-                      stroke={currentTool === tool ? '#A78BFA' : '#8B8B93'}
+                      stroke={isToolActive(tool) ? '#A78BFA' : '#8B8B93'}
                       strokeWidth="1.7"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -650,7 +663,7 @@ export function Toolbar({
               <input
                 type="range"
                 min="1"
-                max="8"
+                max="100"
                 value={currentWidth}
                 onChange={(e) => onWidthChange(Number(e.target.value))}
                 style={{ flex: 1, accentColor: '#A78BFA', height: '4px' }}
@@ -660,7 +673,7 @@ export function Toolbar({
                   font: '500 11px/1 Manrope,system-ui,sans-serif',
                   color: '#8B8B93',
                   fontVariantNumeric: 'tabular-nums',
-                  minWidth: '14px',
+                  minWidth: '22px',
                   textAlign: 'right',
                 }}
               >
@@ -669,7 +682,7 @@ export function Toolbar({
             </div>
 
             {/* Arrow head style — only meaningful for the arrow tool */}
-            {currentTool === 'arrow' && (
+            {isToolActive('arrow') && (
               <div
                 style={{
                   display: 'flex',
@@ -721,7 +734,7 @@ export function Toolbar({
             )}
 
             {/* Shape fill — only meaningful for rectangle / ellipse */}
-            {SHAPE_TOOLS.includes(currentTool) && (
+            {SHAPE_TOOLS.some(isToolActive) && (
               <div
                 style={{
                   display: 'flex',

@@ -4,4 +4,6 @@ dist/
 .DS_Store
 claude.md
 CLAUDE.md
+agents.md
+AGENTS.md
 design-tokens.md

@@ -58,6 +58,20 @@ const LASER_TRAIL_MS = 450;
 /** Cap on retained undo states, so long sessions don't grow memory unbounded. */
 const HISTORY_LIMIT = 50;
 
+/**
+ * Ring cursor matching the eraser's reach, so it's obvious what will be rubbed
+ * out. Radius is clamped because browsers refuse to render cursors past ~128px.
+ */
+function eraserCursor(strokeWidth: number): string {
+  const r = Math.min(48, Math.max(10, strokeWidth));
+  const size = r * 2;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">` +
+    `<circle cx="${r}" cy="${r}" r="${r - 1}" fill="rgba(245,245,247,0.18)" ` +
+    `stroke="#F5F5F7" stroke-width="1.5"/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${r} ${r}, cell`;
+}
+
 export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
@@ -75,6 +89,12 @@ export function OverlayApp() {
 
   const currentPointsRef = useRef<Point[] | null>(null);
   const dragStartRef = useRef<Point | null>(null);
+  /**
+   * Objects as they were when an erase drag began. Erasing mutates state on
+   * every pointermove, but the whole drag collapses into one undo entry, so we
+   * hold the pre-drag snapshot here and push it once on pointerup.
+   */
+  const eraseBaselineRef = useRef<AnnotationObject[] | null>(null);
   const cursorRef = useRef<Point>({ x: -100, y: -100 });
   const laserTrailRef = useRef<{ point: Point; time: number }[]>([]);
   const laserActiveRef = useRef(false);
@@ -146,6 +166,13 @@ export function OverlayApp() {
 
     const capturing = drawModeEnabled && CAPTURING_TOOLS.has(tool);
     liveCanvas.style.pointerEvents = capturing ? 'auto' : 'none';
+    liveCanvas.style.cursor = !capturing
+      ? ''
+      : tool === 'eraser'
+        ? eraserCursor(strokeWidth)
+        : tool === 'text'
+          ? 'text'
+          : 'crosshair';
 
     const needsRaf = drawModeEnabled && (tool === 'laser' || tool === 'spotlight');
     if (needsRaf && !rafHandleRef.current) {
@@ -211,7 +238,7 @@ export function OverlayApp() {
       rafHandleRef.current = 0;
       clearLive();
     }
-  }, [drawModeEnabled, tool, clearLive]);
+  }, [drawModeEnabled, tool, strokeWidth, clearLive]);
 
   const makeId = useCallback(() => {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -220,6 +247,7 @@ export function OverlayApp() {
   const resetDrag = useCallback(() => {
     currentPointsRef.current = null;
     dragStartRef.current = null;
+    eraseBaselineRef.current = null;
     clearLive();
   }, [clearLive]);
 
@@ -236,6 +264,18 @@ export function OverlayApp() {
     },
     [objects]
   );
+
+  /**
+   * Remove the topmost object under `point`, if any. Deliberately a pure
+   * updater rather than a commit() call: an erase drag fires this on every
+   * pointermove, and history is recorded once for the whole drag instead.
+   */
+  const eraseAt = useCallback((point: Point) => {
+    setObjects((prev) => {
+      const hit = findTopmostHit(point, prev);
+      return hit ? prev.filter((o) => o.id !== hit.id) : prev;
+    });
+  }, []);
 
   const commitTextInput = useCallback(() => {
     const input = editingInputRef.current;
@@ -278,16 +318,16 @@ export function OverlayApp() {
       editingInputRef.current = input;
       editingPointRef.current = point;
 
-      const commit = () => commitTextInput();
-      input.addEventListener('blur', commit);
+      const commitText = () => commitTextInput();
+      input.addEventListener('blur', commitText);
       input.addEventListener('keydown', (ke) => {
         if (ke.key === 'Enter' && !ke.shiftKey) {
           ke.preventDefault();
-          commit();
+          commitText();
         } else if (ke.key === 'Escape') {
           ke.preventDefault();
           input.value = '';
-          commit();
+          commitText();
         }
       });
     },
@@ -301,10 +341,8 @@ export function OverlayApp() {
       e.currentTarget.setPointerCapture(e.pointerId);
 
       if (tool === 'eraser') {
-        const hit = findTopmostHit(point, objects);
-        if (hit) {
-          commit(objects.filter((o) => o.id !== hit.id));
-        }
+        eraseBaselineRef.current = objects;
+        eraseAt(point);
         return;
       }
 
@@ -319,13 +357,20 @@ export function OverlayApp() {
         dragStartRef.current = point;
       }
     },
-    [drawModeEnabled, tool, objects, beginTextInput]
+    [drawModeEnabled, tool, objects, beginTextInput, eraseAt]
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!drawModeEnabled) return;
       const point = { x: e.clientX, y: e.clientY };
+      // Eraser rubs out everything the cursor is dragged across, so it runs
+      // before the stroke-preview branches and needs no drag state of its own.
+      if (tool === 'eraser') {
+        if (eraseBaselineRef.current !== null) eraseAt(point);
+        return;
+      }
+
       const liveCanvas = liveCanvasRef.current;
       if (!liveCanvas) return;
       const ctx = liveCanvas.getContext('2d')!;
@@ -373,7 +418,7 @@ export function OverlayApp() {
         });
       }
     },
-    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, clearLive]
+    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, clearLive, eraseAt]
   );
 
   const onPointerUp = useCallback(
@@ -381,6 +426,18 @@ export function OverlayApp() {
       if (!drawModeEnabled) return;
       const point = { x: e.clientX, y: e.clientY };
       e.currentTarget.releasePointerCapture(e.pointerId);
+
+      // An erase drag already mutated `objects` directly; record the whole drag
+      // as one undo entry now that it's finished.
+      if (tool === 'eraser') {
+        const baseline = eraseBaselineRef.current;
+        eraseBaselineRef.current = null;
+        if (baseline && baseline !== objects) {
+          setPast((p) => [...p, baseline].slice(-HISTORY_LIMIT));
+          setFuture([]);
+        }
+        return;
+      }
 
       // Snapshot the refs before clearing them. setObjects runs its updater
       // asynchronously, so reading a ref inside the updater would see the null
