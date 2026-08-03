@@ -4,15 +4,15 @@ const svg = (inner: string) =>
   `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
 
 export const TOOL_ICONS: Record<ToolId, string> = {
-  pencil: svg('<path d="M3 21l1.6-5.6L16.4 3.6a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L8.6 19.4 3 21z"/><path d="M14.5 5.5l4 4"/>'),
-  highlighter: svg('<path d="M6 20h12"/><path d="M9 14l-3 3 1 3 3-1 8-8-4-4z"/><path d="M13 5l4 4"/>'),
-  arrow: svg('<path d="M4 20L20 4"/><path d="M20 4h-7"/><path d="M20 4v7"/>'),
-  rectangle: svg('<rect x="4" y="6" width="16" height="12" rx="1.5"/>'),
-  ellipse: svg('<ellipse cx="12" cy="12" rx="8" ry="6"/>'),
-  text: svg('<path d="M5 6h14"/><path d="M12 6v12"/><path d="M9 18h6"/>'),
-  laser: svg('<circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="7" stroke-dasharray="2 3"/>'),
-  spotlight: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/>'),
-  eraser: svg('<path d="M20 20H9l-6-6a2 2 0 0 1 0-2.8l8-8a2 2 0 0 1 2.8 0l6 6a2 2 0 0 1 0 2.8L13 18"/>'),
+  pencil: 'M5 19l3-.8L19.2 7A2 2 0 0016.4 4.2L5.2 15.4 4.4 19 5 19z',
+  highlighter: 'M6 20h5l1.5-3.5 6-7-4-4-6 7L7 17l-1 3z',
+  arrow: 'M5 19L19 5M19 5h-8M19 5v8',
+  rectangle: 'M4.5 6.5h15v11h-15z',
+  ellipse: 'M12 4a8 8 0 100 16 8 8 0 100-16z',
+  text: 'M5 6.5h14M12 6.5V19M9 19h6',
+  laser: 'M12 9a3 3 0 100 6 3 3 0 100-6zM12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2',
+  spotlight: 'M12 4a8 8 0 100 16 8 8 0 100-16zM12 9.5a2.5 2.5 0 100 5 2.5 2.5 0 100-5z',
+  eraser: 'M4 14l6-6 6 6-4 4H8l-4-4zM8 20h11',
 };
 
 export const CLEAR_ICON = svg('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>');
