@@ -1,3 +1,19 @@
+/**
+ * OverlayApp.tsx
+ *
+ * Main application component for the ScreenSlate annotation overlay.
+ * Manages all annotation state, canvas rendering, tool interactions, and user input.
+ *
+ * Key responsibilities:
+ * - Canvas lifecycle (creation, resizing, rendering)
+ * - Annotation drawing logic for all tool types (pencil, highlighter, arrow, shapes, text)
+ * - Undo/redo history management
+ * - Laser pointer and spotlight effects
+ * - Chrome storage integration for per-tab persistence
+ * - Screenshot capture and PNG export
+ * - Background script message handling
+ */
+
 import { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import type {
   AnnotationObject,
@@ -39,6 +55,9 @@ const TOOL_CYCLE_ORDER: ToolId[] = [
 
 const LASER_TRAIL_MS = 450;
 
+/** Cap on retained undo states, so long sessions don't grow memory unbounded. */
+const HISTORY_LIMIT = 50;
+
 export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
@@ -49,8 +68,9 @@ export function OverlayApp() {
   const [headStyle, setHeadStyle] = useState<ArrowHeadStyle>('triangle');
   const [filled, setFilled] = useState(false);
   const [objects, setObjects] = useState<AnnotationObject[]>([]);
-  const [undoStack, setUndoStack] = useState<AnnotationObject[][]>([]);
-  const [undoneCount, setUndoneCount] = useState(0);
+  // Undo history: `past` holds prior states, `future` holds states undone away.
+  const [past, setPast] = useState<AnnotationObject[][]>([]);
+  const [future, setFuture] = useState<AnnotationObject[][]>([]);
   const [statusText, setStatusText] = useState('');
 
   const currentPointsRef = useRef<Point[] | null>(null);
@@ -203,6 +223,20 @@ export function OverlayApp() {
     clearLive();
   }, [clearLive]);
 
+  /**
+   * Single entry point for every annotation mutation. Pushes the outgoing state
+   * onto the undo stack and drops the redo stack, so undo/redo stay consistent
+   * no matter which tool made the change.
+   */
+  const commit = useCallback(
+    (next: AnnotationObject[]) => {
+      setPast((p) => [...p, objects].slice(-HISTORY_LIMIT));
+      setFuture([]);
+      setObjects(next);
+    },
+    [objects]
+  );
+
   const commitTextInput = useCallback(() => {
     const input = editingInputRef.current;
     const point = editingPointRef.current;
@@ -212,8 +246,8 @@ export function OverlayApp() {
     const text = input.value.trim();
     input.remove();
     if (!text) return;
-    setObjects((prev) => [
-      ...prev,
+    commit([
+      ...objects,
       {
         id: makeId(),
         type: 'text',
@@ -225,7 +259,7 @@ export function OverlayApp() {
         fontSize: Math.max(14, strokeWidth * 4),
       },
     ]);
-  }, [color, strokeWidth, makeId]);
+  }, [color, strokeWidth, makeId, commit, objects]);
 
   const beginTextInput = useCallback(
     (point: Point) => {
@@ -269,7 +303,7 @@ export function OverlayApp() {
       if (tool === 'eraser') {
         const hit = findTopmostHit(point, objects);
         if (hit) {
-          setObjects((prev) => prev.filter((o) => o.id !== hit.id));
+          commit(objects.filter((o) => o.id !== hit.id));
         }
         return;
       }
@@ -348,64 +382,70 @@ export function OverlayApp() {
       const point = { x: e.clientX, y: e.clientY };
       e.currentTarget.releasePointerCapture(e.pointerId);
 
-      if (currentPointsRef.current && (tool === 'pencil' || tool === 'highlighter')) {
-        if (currentPointsRef.current.length > 1) {
-          setObjects((prev) => [
-            ...prev,
+      // Snapshot the refs before clearing them. setObjects runs its updater
+      // asynchronously, so reading a ref inside the updater would see the null
+      // we assign below rather than the stroke we just finished.
+      const points = currentPointsRef.current;
+      const dragStart = dragStartRef.current;
+      currentPointsRef.current = null;
+      dragStartRef.current = null;
+
+      if (points && (tool === 'pencil' || tool === 'highlighter')) {
+        if (points.length > 1) {
+          commit([
+            ...objects,
             {
               id: makeId(),
               type: tool,
               color,
               strokeWidth,
               createdAt: Date.now(),
-              points: currentPointsRef.current!,
+              points,
             },
           ]);
         }
-        currentPointsRef.current = null;
-      } else if (dragStartRef.current && tool === 'arrow') {
-        setObjects((prev) => [
-          ...prev,
+      } else if (dragStart && tool === 'arrow') {
+        commit([
+          ...objects,
           {
             id: makeId(),
             type: 'arrow',
             color,
             strokeWidth,
             createdAt: Date.now(),
-            start: dragStartRef.current!,
+            start: dragStart,
             end: point,
             headStyle,
           },
         ]);
-        dragStartRef.current = null;
-      } else if (dragStartRef.current && (tool === 'rectangle' || tool === 'ellipse')) {
-        setObjects((prev) => [
-          ...prev,
+      } else if (dragStart && (tool === 'rectangle' || tool === 'ellipse')) {
+        commit([
+          ...objects,
           {
             id: makeId(),
             type: tool,
             color,
             strokeWidth,
             createdAt: Date.now(),
-            start: dragStartRef.current!,
+            start: dragStart,
             end: point,
             filled,
           },
         ]);
-        dragStartRef.current = null;
       } else {
         return;
       }
 
       clearLive();
     },
-    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, makeId, clearLive]
+    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, makeId, clearLive, commit, objects]
   );
 
   const handleClear = useCallback(() => {
-    setObjects([]);
+    if (objects.length === 0) return;
+    commit([]);
     setStatusText('Cleared');
-  }, []);
+  }, [commit, objects]);
 
   const cycleTool = useCallback(() => {
     const idx = TOOL_CYCLE_ORDER.indexOf(tool);
@@ -414,34 +454,21 @@ export function OverlayApp() {
     setStatusText(`Tool: ${next}`);
   }, [tool]);
 
-  const pushUndo = useCallback(() => {
-    setUndoStack((stack) => [...stack, objects]);
-    setUndoneCount(0);
-  }, [objects]);
-
   const handleUndo = useCallback(() => {
-    if (undoStack.length === 0 || undoneCount >= undoStack.length) return;
-    const newUndoneCount = undoneCount + 1;
-    const historyState = undoStack[undoStack.length - newUndoneCount];
-    if (historyState) {
-      setObjects(historyState);
-      setUndoneCount(newUndoneCount);
-    }
-  }, [undoStack, undoneCount]);
+    if (past.length === 0) return;
+    const previous = past[past.length - 1]!;
+    setPast((p) => p.slice(0, -1));
+    setFuture((f) => [objects, ...f]);
+    setObjects(previous);
+  }, [past, objects]);
 
   const handleRedo = useCallback(() => {
-    if (undoneCount === 0) return;
-    const newUndoneCount = undoneCount - 1;
-    if (newUndoneCount === 0) {
-      setObjects(objects);
-    } else {
-      const historyState = undoStack[undoStack.length - newUndoneCount];
-      if (historyState) {
-        setObjects(historyState);
-      }
-    }
-    setUndoneCount(newUndoneCount);
-  }, [undoStack, undoneCount, objects]);
+    if (future.length === 0) return;
+    const next = future[0]!;
+    setFuture((f) => f.slice(1));
+    setPast((p) => [...p, objects].slice(-HISTORY_LIMIT));
+    setObjects(next);
+  }, [future, objects]);
 
   const savePng = useCallback(async () => {
     setStatusText('Capturing...');
@@ -488,12 +515,33 @@ export function OverlayApp() {
     [resetDrag]
   );
 
-  const handleDrawModeToggle = useCallback((enabled: boolean) => {
-    setDrawModeEnabled(enabled);
-    if (!enabled) {
+  const handleDrawModeToggle = useCallback(
+    (enabled: boolean) => {
+      setDrawModeEnabled(enabled);
+      if (!enabled) {
+        laserActiveRef.current = false;
+        resetDrag();
+      }
+    },
+    [resetDrag]
+  );
+
+  /**
+   * Toggle driven by the toolbar icon / Alt+Shift+S. Activating always drops the
+   * user into pencil so the extension is immediately usable; the toolbar's own
+   * tool buttons go through handleDrawModeToggle instead, which preserves the
+   * tool the user just picked.
+   */
+  const toggleDrawMode = useCallback(() => {
+    const next = !drawModeEnabled;
+    setDrawModeEnabled(next);
+    if (next) {
+      setTool('pencil');
+    } else {
       laserActiveRef.current = false;
     }
-  }, []);
+    resetDrag();
+  }, [drawModeEnabled, resetDrag]);
 
   // Initialize
   useEffect(() => {
@@ -585,7 +633,7 @@ export function OverlayApp() {
     const handleMessage = (message: BackgroundToContentMessage) => {
       switch (message.kind) {
         case 'toggle-draw-mode':
-          setDrawModeEnabled((prev) => !prev);
+          toggleDrawMode();
           break;
         case 'clear-annotations':
           handleClear();
@@ -598,7 +646,7 @@ export function OverlayApp() {
 
     chrome.runtime.onMessage.addListener(handleMessage);
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
-  }, [handleClear, cycleTool]);
+  }, [handleClear, cycleTool, toggleDrawMode]);
 
   return (
     <>
@@ -640,8 +688,8 @@ export function OverlayApp() {
         onDrawModeToggle={handleDrawModeToggle}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        canUndo={undoStack.length > 0 && undoneCount < undoStack.length}
-        canRedo={undoneCount > 0}
+        canUndo={past.length > 0}
+        canRedo={future.length > 0}
         drawModeEnabled={drawModeEnabled}
         currentTool={tool}
         currentColor={color}

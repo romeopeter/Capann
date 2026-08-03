@@ -3,4 +3,5 @@ dist/
 *.log
 .DS_Store
 claude.md
+CLAUDE.md
 design-tokens.md

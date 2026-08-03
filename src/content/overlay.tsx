@@ -1,3 +1,16 @@
+/**
+ * overlay.tsx
+ *
+ * Entry point for the ScreenSlate content script.
+ * Sets up the shadow DOM container and mounts the React application.
+ *
+ * Key responsibilities:
+ * - Creates isolated shadow DOM to prevent CSS conflicts with host page
+ * - Provides ShadowRootContext for components that need DOM access
+ * - Bootstraps the React application via OverlayApp component
+ * - Ensures single instance per page (guards against double injection)
+ */
+
 import { createRoot } from 'react-dom/client';
 import { OverlayApp } from './OverlayApp';
 import { createContext } from 'react';
