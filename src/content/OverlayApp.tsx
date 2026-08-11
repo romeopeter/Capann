@@ -1,7 +1,7 @@
 /**
  * OverlayApp.tsx
  *
- * Main application component for the ScreenSlate annotation overlay.
+ * Main application component for the Capann annotation overlay.
  * Manages all annotation state, canvas rendering, tool interactions, and user input.
  *
  * Key responsibilities:
@@ -551,7 +551,7 @@ export function OverlayApp() {
       redrawAll(ctx, window.innerWidth, window.innerHeight, objects);
 
       const dataUrl = composite.toDataURL('image/png');
-      const filename = `screenslate-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      const filename = `capann-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
       await chrome.runtime.sendMessage({
         kind: 'download-png',
         dataUrl,
@@ -560,7 +560,7 @@ export function OverlayApp() {
       setStatusText('Saved!');
     } catch (err) {
       setStatusText('Save failed');
-      console.error('[ScreenSlate] save failed', err);
+      console.error('[Capann] save failed', err);
     }
   }, [objects]);
 

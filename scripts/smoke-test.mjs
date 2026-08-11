@@ -50,7 +50,7 @@ try {
   await page.goto('http://localhost:8973/', { waitUntil: 'load' });
   await page.waitForTimeout(500);
 
-  const hostExists = await page.evaluate(() => !!document.getElementById('screenslate-host'));
+  const hostExists = await page.evaluate(() => !!document.getElementById('capann-host'));
   console.log('overlay host injected:', hostExists);
   if (!hostExists) throw new Error('overlay host div was not injected by content script');
 
@@ -60,7 +60,7 @@ try {
   console.log('clicked launcher to enable draw mode');
 
   const panelVisible = await page.evaluate(() => {
-    const host = document.getElementById('screenslate-host');
+    const host = document.getElementById('capann-host');
     const panel = host?.shadowRoot?.querySelector('.panel');
     return panel ? !panel.hasAttribute('hidden') : false;
   });
@@ -76,7 +76,7 @@ try {
   await page.waitForTimeout(200);
 
   const hasInk = await page.evaluate(() => {
-    const host = document.getElementById('screenslate-host');
+    const host = document.getElementById('capann-host');
     const canvas = host?.shadowRoot?.querySelectorAll('canvas')[0];
     if (!canvas) return false;
     const ctx = canvas.getContext('2d');
@@ -96,7 +96,7 @@ try {
   await page.mouse.click(300, 260);
   await page.waitForTimeout(200);
   const erased = await page.evaluate(() => {
-    const host = document.getElementById('screenslate-host');
+    const host = document.getElementById('capann-host');
     const canvas = host?.shadowRoot?.querySelectorAll('canvas')[0];
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;

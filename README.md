@@ -1,4 +1,4 @@
-# ScreenSlate
+# Capann
 
 Browser extension for annotating on screen while presenting — pencil,
 highlighter, arrow pointer, shapes, text callouts, and a laser/spotlight pointer,
