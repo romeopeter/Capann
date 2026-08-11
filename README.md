@@ -1,9 +1,6 @@
 # Capann
 
-Browser extension for annotating on screen while presenting — pencil,
-highlighter, arrow pointer, shapes, text callouts, and a laser/spotlight pointer,
-built for pointing out key details during screen-shares in meetings,
-brainstorms, and standups.
+Browser extension for screen recording and annotation.
 
 ## Features
 
