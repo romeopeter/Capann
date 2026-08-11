@@ -1,7 +1,7 @@
 /**
  * build.mjs
  *
- * esbuild-based bundler for ScreenSlate Chrome extension.
+ * esbuild-based bundler for Capann Chrome extension.
  * Compiles TypeScript + React (JSX) to browser-compatible JavaScript.
  *
  * Usage:

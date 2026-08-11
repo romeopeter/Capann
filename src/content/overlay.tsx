@@ -1,7 +1,7 @@
 /**
  * overlay.tsx
  *
- * Entry point for the ScreenSlate content script.
+ * Entry point for the Capann content script.
  * Sets up the shadow DOM container and mounts the React application.
  *
  * Key responsibilities:
@@ -17,9 +17,9 @@ import { createContext } from 'react';
 
 export const ShadowRootContext = createContext<ShadowRoot | null>(null);
 
-if (!document.getElementById('screenslate-host')) {
+if (!document.getElementById('capann-host')) {
   const host = document.createElement('div');
-  host.id = 'screenslate-host';
+  host.id = 'capann-host';
   host.style.all = 'initial';
   document.documentElement.append(host);
 

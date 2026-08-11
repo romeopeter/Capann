@@ -1,7 +1,7 @@
 /**
  * types.ts
  *
- * Shared TypeScript type definitions for ScreenSlate.
+ * Shared TypeScript type definitions for Capann.
  * Central type system used across content scripts and background service worker.
  *
  * Key types:
@@ -102,4 +102,4 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   eraser: 'Eraser',
 };
 
-export const STORAGE_KEY_PREFIX = 'screenslate_tab_';
+export const STORAGE_KEY_PREFIX = 'capann_tab_';

@@ -1,8 +1,8 @@
 {
-  "name": "screenslate",
+  "name": "capann",
   "version": "1.0.0",
   "private": true,
-  "description": "ScreenSlate — pencil, arrow pointer, highlighter, shapes, text and laser/spotlight annotation overlay for screen-sharing.",
+  "description": "Capann — pencil, arrow pointer, highlighter, shapes, text and laser/spotlight annotation overlay for screen-sharing.",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && node scripts/build.mjs",
