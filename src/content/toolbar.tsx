@@ -48,6 +48,7 @@ export interface ToolbarProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  isCapturing?: boolean;
   drawModeEnabled: boolean;
   currentTool: ToolId;
   currentColor: string;
@@ -70,6 +71,7 @@ export function Toolbar({
   onRedo,
   canUndo = false,
   canRedo = false,
+  isCapturing = false,
   drawModeEnabled,
   currentTool,
   currentColor,
@@ -189,7 +191,7 @@ export function Toolbar({
   };
 
   return (
-    <>
+    <div style={{ visibility: isCapturing ? 'hidden' : 'visible' }}>
       {/* Timer chip (bottom-left) */}
       {timerOn && (
         <div
@@ -965,7 +967,7 @@ export function Toolbar({
           }
         }
       `}</style>
-    </>
+    </div>
   );
 }
 

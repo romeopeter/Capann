@@ -86,6 +86,7 @@ export function OverlayApp() {
   const [past, setPast] = useState<AnnotationObject[][]>([]);
   const [future, setFuture] = useState<AnnotationObject[][]>([]);
   const [statusText, setStatusText] = useState('');
+  const [isCapturing, setIsCapturing] = useState(false);
 
   const currentPointsRef = useRef<Point[] | null>(null);
   const dragStartRef = useRef<Point | null>(null);
@@ -529,7 +530,15 @@ export function OverlayApp() {
 
   const savePng = useCallback(async () => {
     setStatusText('Capturing...');
+    setIsCapturing(true);
     try {
+      // Let the browser actually paint the toolbar as hidden before requesting
+      // the screenshot — a state update alone doesn't guarantee the next
+      // compositor frame reflects it yet.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+
       const response = (await chrome.runtime.sendMessage({
         kind: 'capture-visible-tab',
       } satisfies ContentToBackgroundMessage)) as BackgroundToContentMessage;
@@ -548,7 +557,7 @@ export function OverlayApp() {
       const ctx = composite.getContext('2d')!;
       ctx.drawImage(screenshot, 0, 0, composite.width, composite.height);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      redrawAll(ctx, window.innerWidth, window.innerHeight, objects);
+      for (const obj of objects) drawAnnotation(ctx, obj);
 
       const dataUrl = composite.toDataURL('image/png');
       const filename = `capann-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
@@ -561,6 +570,8 @@ export function OverlayApp() {
     } catch (err) {
       setStatusText('Save failed');
       console.error('[Capann] save failed', err);
+    } finally {
+      setIsCapturing(false);
     }
   }, [objects]);
 
@@ -747,6 +758,7 @@ export function OverlayApp() {
         onRedo={handleRedo}
         canUndo={past.length > 0}
         canRedo={future.length > 0}
+        isCapturing={isCapturing}
         drawModeEnabled={drawModeEnabled}
         currentTool={tool}
         currentColor={color}
