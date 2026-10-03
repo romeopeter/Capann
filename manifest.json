@@ -29,6 +29,12 @@
       "all_frames": false
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/capann-logo.png"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "permissions": ["storage", "activeTab", "downloads"],
   "host_permissions": ["<all_urls>"],
   "commands": {

@@ -19,16 +19,19 @@ import type {
   ShapeAnnotation,
   StrokeAnnotation,
   TextAnnotation,
-} from '../shared/types';
+} from "../shared/types";
 
-function drawStroke(ctx: CanvasRenderingContext2D, ann: StrokeAnnotation): void {
+function drawStroke(
+  ctx: CanvasRenderingContext2D,
+  ann: StrokeAnnotation,
+): void {
   if (ann.points.length < 2) return;
   ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
   ctx.strokeStyle = ann.color;
   ctx.lineWidth = ann.strokeWidth;
-  ctx.globalAlpha = ann.type === 'highlighter' ? 0.35 : 1;
+  ctx.globalAlpha = ann.type === "highlighter" ? 0.35 : 1;
   ctx.beginPath();
   const [first, ...rest] = ann.points;
   ctx.moveTo(first!.x, first!.y);
@@ -42,14 +45,14 @@ function drawArrowHead(
   from: Point,
   to: Point,
   size: number,
-  style: ArrowHeadStyle
+  style: ArrowHeadStyle,
 ): void {
   const angle = Math.atan2(to.y - from.y, to.x - from.x);
   const headLength = Math.max(10, size * 4);
   const spread = Math.PI / 7;
 
   ctx.beginPath();
-  if (style === 'triangle') {
+  if (style === "triangle") {
     const left: Point = {
       x: to.x - headLength * Math.cos(angle - spread),
       y: to.y - headLength * Math.sin(angle - spread),
@@ -63,7 +66,7 @@ function drawArrowHead(
     ctx.lineTo(right.x, right.y);
     ctx.closePath();
     ctx.fill();
-  } else if (style === 'chevron') {
+  } else if (style === "chevron") {
     const left: Point = {
       x: to.x - headLength * Math.cos(angle - spread),
       y: to.y - headLength * Math.sin(angle - spread),
@@ -98,7 +101,7 @@ function drawArrow(ctx: CanvasRenderingContext2D, ann: ArrowAnnotation): void {
   ctx.strokeStyle = ann.color;
   ctx.fillStyle = ann.color;
   ctx.lineWidth = ann.strokeWidth;
-  ctx.lineCap = 'round';
+  ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(ann.start.x, ann.start.y);
   ctx.lineTo(ann.end.x, ann.end.y);
@@ -118,10 +121,18 @@ function drawShape(ctx: CanvasRenderingContext2D, ann: ShapeAnnotation): void {
   const height = Math.abs(ann.end.y - ann.start.y);
 
   ctx.beginPath();
-  if (ann.type === 'rectangle') {
+  if (ann.type === "rectangle") {
     ctx.rect(left, top, width, height);
   } else {
-    ctx.ellipse(left + width / 2, top + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+    ctx.ellipse(
+      left + width / 2,
+      top + height / 2,
+      width / 2,
+      height / 2,
+      0,
+      0,
+      Math.PI * 2,
+    );
   }
   if (ann.filled) {
     ctx.globalAlpha = 0.25;
@@ -138,25 +149,28 @@ function drawText(ctx: CanvasRenderingContext2D, ann: TextAnnotation): void {
   ctx.save();
   ctx.fillStyle = ann.color;
   ctx.font = `600 ${ann.fontSize}px system-ui, -apple-system, sans-serif`;
-  ctx.textBaseline = 'alphabetic';
+  ctx.textBaseline = "alphabetic";
   ctx.fillText(ann.text, ann.position.x, ann.position.y);
   ctx.restore();
 }
 
-export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: AnnotationObject): void {
+export function drawAnnotation(
+  ctx: CanvasRenderingContext2D,
+  ann: AnnotationObject,
+): void {
   switch (ann.type) {
-    case 'pencil':
-    case 'highlighter':
+    case "pencil":
+    case "highlighter":
       drawStroke(ctx, ann);
       break;
-    case 'arrow':
+    case "arrow":
       drawArrow(ctx, ann);
       break;
-    case 'rectangle':
-    case 'ellipse':
+    case "rectangle":
+    case "ellipse":
       drawShape(ctx, ann);
       break;
-    case 'text':
+    case "text":
       drawText(ctx, ann);
       break;
   }
@@ -166,7 +180,7 @@ export function redrawAll(
   ctx: CanvasRenderingContext2D,
   cssWidth: number,
   cssHeight: number,
-  objects: AnnotationObject[]
+  objects: AnnotationObject[],
 ): void {
   ctx.clearRect(0, 0, cssWidth, cssHeight);
   for (const obj of objects) drawAnnotation(ctx, obj);

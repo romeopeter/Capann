@@ -17,17 +17,18 @@ export interface Point {
 }
 
 export type ToolId =
-  | 'pencil'
-  | 'highlighter'
-  | 'arrow'
-  | 'rectangle'
-  | 'ellipse'
-  | 'text'
-  | 'laser'
-  | 'spotlight'
-  | 'eraser';
+  | "pencil"
+  | "highlighter"
+  | "arrow"
+  | "rectangle"
+  | "ellipse"
+  | "text"
+  | "select"
+  | "laser"
+  | "spotlight"
+  | "eraser";
 
-export type ArrowHeadStyle = 'triangle' | 'chevron' | 'stick';
+export type ArrowHeadStyle = "triangle" | "chevron" | "stick";
 
 interface AnnotationBase {
   id: string;
@@ -37,26 +38,26 @@ interface AnnotationBase {
 }
 
 export interface StrokeAnnotation extends AnnotationBase {
-  type: 'pencil' | 'highlighter';
+  type: "pencil" | "highlighter";
   points: Point[];
 }
 
 export interface ArrowAnnotation extends AnnotationBase {
-  type: 'arrow';
+  type: "arrow";
   start: Point;
   end: Point;
   headStyle: ArrowHeadStyle;
 }
 
 export interface ShapeAnnotation extends AnnotationBase {
-  type: 'rectangle' | 'ellipse';
+  type: "rectangle" | "ellipse";
   start: Point;
   end: Point;
   filled: boolean;
 }
 
 export interface TextAnnotation extends AnnotationBase {
-  type: 'text';
+  type: "text";
   position: Point;
   text: string;
   fontSize: number;
@@ -74,32 +75,33 @@ export interface TabAnnotationState {
 
 /** Messages sent from the background service worker into a content script. */
 export type BackgroundToContentMessage =
-  | { kind: 'toggle-draw-mode' }
-  | { kind: 'clear-annotations' }
-  | { kind: 'cycle-tool' }
-  | { kind: 'capture-visible-tab-result'; dataUrl: string }
-  | { kind: 'capture-visible-tab-error'; error: string };
+  | { kind: "toggle-draw-mode" }
+  | { kind: "clear-annotations" }
+  | { kind: "cycle-tool" }
+  | { kind: "capture-visible-tab-result"; dataUrl: string }
+  | { kind: "capture-visible-tab-error"; error: string };
 
 /** Messages sent from a content script into the background service worker. */
 export type ContentToBackgroundMessage =
-  | { kind: 'get-tab-id' }
-  | { kind: 'capture-visible-tab' }
-  | { kind: 'download-png'; dataUrl: string; filename: string };
+  | { kind: "get-tab-id" }
+  | { kind: "capture-visible-tab" }
+  | { kind: "download-png"; dataUrl: string; filename: string };
 
 export interface GetTabIdResponse {
   tabId: number;
 }
 
 export const TOOL_LABELS: Record<ToolId, string> = {
-  pencil: 'Pencil',
-  highlighter: 'Highlighter',
-  arrow: 'Arrow',
-  rectangle: 'Rectangle',
-  ellipse: 'Ellipse',
-  text: 'Text',
-  laser: 'Laser pointer',
-  spotlight: 'Spotlight',
-  eraser: 'Eraser',
+  pencil: "Pencil",
+  highlighter: "Highlighter",
+  arrow: "Arrow",
+  rectangle: "Rectangle",
+  ellipse: "Ellipse",
+  text: "Text",
+  select: "Select",
+  laser: "Laser pointer",
+  spotlight: "Spotlight",
+  eraser: "Eraser",
 };
 
-export const STORAGE_KEY_PREFIX = 'capann_tab_';
+export const STORAGE_KEY_PREFIX = "capann_tab_";

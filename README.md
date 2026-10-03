@@ -53,4 +53,8 @@ after each rebuild).
 - Requires `<all_urls>` host permission so annotations and PNG capture work on
   whatever app you're presenting (Meet, Zoom Web, Slides, internal dashboards, etc).
 - Annotations are stored in `chrome.storage.session`, keyed per tab, so they
-  clear automatically when the browser session ends, and immediately on Clear.
+clear automatically when the browser session ends, and immediately on Clear.
+
+## Learning the codebase
+
+See [`learn/README.md`](learn/README.md) for the architecture, annotation data flow, and a guide to extending Capann.

@@ -21,6 +21,7 @@ export const TOOL_ICONS: Record<ToolId, string> = {
   rectangle: 'M4.5 6.5h15v11h-15z',
   ellipse: 'M12 4a8 8 0 100 16 8 8 0 100-16z',
   text: 'M5 6.5h14M12 6.5V19M9 19h6',
+  select: 'M5 3l14 11-7 1.5L9 22 5 3z',
   laser: 'M12 9a3 3 0 100 6 3 3 0 100-6zM12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2',
   spotlight: 'M12 4a8 8 0 100 16 8 8 0 100-16zM12 9.5a2.5 2.5 0 100 5 2.5 2.5 0 100-5z',
   eraser: 'M4 14l6-6 6 6-4 4H8l-4-4zM8 20h11',

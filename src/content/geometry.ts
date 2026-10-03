@@ -13,7 +13,107 @@
  * 🤖 Co-authored by Claude (because Romeo is nice!)
  */
 
-import type { AnnotationObject, Point } from '../shared/types';
+import type { AnnotationObject, Point, ShapeAnnotation } from "../shared/types";
+
+export interface Bounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export function annotationBounds(ann: AnnotationObject): Bounds {
+  if (
+    ann.type === "rectangle" ||
+    ann.type === "ellipse" ||
+    ann.type === "arrow"
+  ) {
+    return {
+      left: Math.min(ann.start.x, ann.end.x),
+      top: Math.min(ann.start.y, ann.end.y),
+      right: Math.max(ann.start.x, ann.end.x),
+      bottom: Math.max(ann.start.y, ann.end.y),
+    };
+  }
+  if (ann.type === "text") {
+    return {
+      left: ann.position.x,
+      top: ann.position.y - ann.fontSize * 1.3,
+      right: ann.position.x + ann.text.length * ann.fontSize * 0.6,
+      bottom: ann.position.y,
+    };
+  }
+  if (!("points" in ann)) return { left: 0, top: 0, right: 0, bottom: 0 };
+  const xs = ann.points.map((p) => p.x),
+    ys = ann.points.map((p) => p.y);
+  return {
+    left: Math.min(...xs),
+    top: Math.min(...ys),
+    right: Math.max(...xs),
+    bottom: Math.max(...ys),
+  };
+}
+
+export function shapeContains(
+  point: Point,
+  shape: ShapeAnnotation,
+  padding = 0,
+): boolean {
+  const b = annotationBounds(shape);
+  if (shape.type === "ellipse") {
+    const rx = Math.max(1, (b.right - b.left) / 2 + padding);
+    const ry = Math.max(1, (b.bottom - b.top) / 2 + padding);
+    const cx = (b.left + b.right) / 2,
+      cy = (b.top + b.bottom) / 2;
+    return ((point.x - cx) / rx) ** 2 + ((point.y - cy) / ry) ** 2 <= 1;
+  }
+  return (
+    point.x >= b.left - padding &&
+    point.x <= b.right + padding &&
+    point.y >= b.top - padding &&
+    point.y <= b.bottom + padding
+  );
+}
+
+export function resizeShape(
+  shape: ShapeAnnotation,
+  handle: number,
+  point: Point,
+): ShapeAnnotation {
+  const b = annotationBounds(shape);
+  const corners = [
+    { x: b.left, y: b.top },
+    { x: b.right, y: b.top },
+    { x: b.left, y: b.bottom },
+    { x: b.right, y: b.bottom },
+  ];
+  const opposite = corners[[3, 2, 1, 0][handle]!]!;
+  const x = point.x <= opposite.x ? opposite.x - 2 : point.x;
+  const y = point.y <= opposite.y ? opposite.y - 2 : point.y;
+  const left = Math.min(x, opposite.x),
+    top = Math.min(y, opposite.y);
+  const right = Math.max(x, opposite.x),
+    bottom = Math.max(y, opposite.y);
+  return { ...shape, start: { x: left, y: top }, end: { x: right, y: bottom } };
+}
+
+export function translateAnnotation(
+  ann: AnnotationObject,
+  dx: number,
+  dy: number,
+): AnnotationObject {
+  const move = (p: Point): Point => ({ x: p.x + dx, y: p.y + dy });
+  if ("points" in ann) return { ...ann, points: ann.points.map(move) };
+  if (ann.type === "text") return { ...ann, position: move(ann.position) };
+  if (
+    ann.type === "arrow" ||
+    ann.type === "rectangle" ||
+    ann.type === "ellipse"
+  ) {
+    return { ...ann, start: move(ann.start), end: move(ann.end) };
+  }
+  return ann;
+}
 
 export function distance(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -43,36 +143,51 @@ function distanceToPolyline(p: Point, points: Point[]): number {
 export function hitTest(point: Point, ann: AnnotationObject): boolean {
   const tolerance = Math.max(10, ann.strokeWidth);
   switch (ann.type) {
-    case 'pencil':
-    case 'highlighter':
+    case "pencil":
+    case "highlighter":
       return distanceToPolyline(point, ann.points) <= tolerance;
-    case 'arrow':
+    case "arrow":
       return distanceToSegment(point, ann.start, ann.end) <= tolerance;
-    case 'rectangle': {
+    case "rectangle": {
       const left = Math.min(ann.start.x, ann.end.x);
       const right = Math.max(ann.start.x, ann.end.x);
       const top = Math.min(ann.start.y, ann.end.y);
       const bottom = Math.max(ann.start.y, ann.end.y);
       if (ann.filled) {
-        return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+        return (
+          point.x >= left &&
+          point.x <= right &&
+          point.y >= top &&
+          point.y <= bottom
+        );
       }
-      const insideOuter = point.x >= left - tolerance && point.x <= right + tolerance &&
-        point.y >= top - tolerance && point.y <= bottom + tolerance;
-      const insideInner = point.x >= left + tolerance && point.x <= right - tolerance &&
-        point.y >= top + tolerance && point.y <= bottom - tolerance;
+      const insideOuter =
+        point.x >= left - tolerance &&
+        point.x <= right + tolerance &&
+        point.y >= top - tolerance &&
+        point.y <= bottom + tolerance;
+      const insideInner =
+        point.x >= left + tolerance &&
+        point.x <= right - tolerance &&
+        point.y >= top + tolerance &&
+        point.y <= bottom - tolerance;
       return insideOuter && !insideInner;
     }
-    case 'ellipse': {
+    case "ellipse": {
       const cx = (ann.start.x + ann.end.x) / 2;
       const cy = (ann.start.y + ann.end.y) / 2;
       const rx = Math.abs(ann.end.x - ann.start.x) / 2 || 1;
       const ry = Math.abs(ann.end.y - ann.start.y) / 2 || 1;
-      const norm = ((point.x - cx) ** 2) / (rx * rx) + ((point.y - cy) ** 2) / (ry * ry);
+      const norm =
+        (point.x - cx) ** 2 / (rx * rx) + (point.y - cy) ** 2 / (ry * ry);
       if (ann.filled) return norm <= 1;
       const toleranceNorm = tolerance / Math.min(rx, ry);
-      return norm >= (1 - toleranceNorm) * (1 - toleranceNorm) && norm <= (1 + toleranceNorm) * (1 + toleranceNorm);
+      return (
+        norm >= (1 - toleranceNorm) * (1 - toleranceNorm) &&
+        norm <= (1 + toleranceNorm) * (1 + toleranceNorm)
+      );
     }
-    case 'text': {
+    case "text": {
       const approxWidth = ann.text.length * ann.fontSize * 0.6;
       const approxHeight = ann.fontSize * 1.3;
       return (
@@ -87,7 +202,10 @@ export function hitTest(point: Point, ann: AnnotationObject): boolean {
   }
 }
 
-export function findTopmostHit(point: Point, objects: AnnotationObject[]): AnnotationObject | undefined {
+export function findTopmostHit(
+  point: Point,
+  objects: AnnotationObject[],
+): AnnotationObject | undefined {
   for (let i = objects.length - 1; i >= 0; i--) {
     const obj = objects[i]!;
     if (hitTest(point, obj)) return obj;

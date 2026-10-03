@@ -14,7 +14,7 @@
  * - Background script message handling
  */
 
-import { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import { useState, useEffect, useRef, useCallback, useContext } from "react";
 import type {
   AnnotationObject,
   ArrowHeadStyle,
@@ -24,33 +24,42 @@ import type {
   Point,
   TabAnnotationState,
   ToolId,
-} from '../shared/types';
-import { STORAGE_KEY_PREFIX } from '../shared/types';
-import { findTopmostHit } from './geometry';
-import { drawAnnotation, redrawAll } from './render';
-import { Toolbar } from './toolbar';
-import { ShadowRootContext } from './overlay';
+} from "../shared/types";
+import { STORAGE_KEY_PREFIX } from "../shared/types";
+import {
+  annotationBounds,
+  findTopmostHit,
+  hitTest,
+  resizeShape,
+  shapeContains,
+  translateAnnotation,
+} from "./geometry";
+import { drawAnnotation, redrawAll } from "./render";
+import { Toolbar } from "./toolbar";
+import { ShadowRootContext } from "./overlay";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
-  'pencil',
-  'highlighter',
-  'arrow',
-  'rectangle',
-  'ellipse',
-  'text',
-  'eraser',
+  "pencil",
+  "highlighter",
+  "arrow",
+  "rectangle",
+  "ellipse",
+  "text",
+  "eraser",
+  "select",
 ]);
 
 const TOOL_CYCLE_ORDER: ToolId[] = [
-  'pencil',
-  'highlighter',
-  'arrow',
-  'rectangle',
-  'ellipse',
-  'text',
-  'laser',
-  'spotlight',
-  'eraser',
+  "pencil",
+  "highlighter",
+  "arrow",
+  "rectangle",
+  "ellipse",
+  "text",
+  "laser",
+  "spotlight",
+  "eraser",
+  "select",
 ];
 
 const LASER_TRAIL_MS = 450;
@@ -76,17 +85,18 @@ export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
   const [drawModeEnabled, setDrawModeEnabled] = useState(false);
-  const [tool, setTool] = useState<ToolId>('pencil');
-  const [color, setColor] = useState('#A78BFA');
+  const [tool, setTool] = useState<ToolId>("pencil");
+  const [color, setColor] = useState("#A78BFA");
   const [strokeWidth, setStrokeWidth] = useState(4);
-  const [headStyle, setHeadStyle] = useState<ArrowHeadStyle>('triangle');
+  const [headStyle, setHeadStyle] = useState<ArrowHeadStyle>("triangle");
   const [filled, setFilled] = useState(false);
   const [objects, setObjects] = useState<AnnotationObject[]>([]);
   // Undo history: `past` holds prior states, `future` holds states undone away.
   const [past, setPast] = useState<AnnotationObject[][]>([]);
   const [future, setFuture] = useState<AnnotationObject[][]>([]);
-  const [statusText, setStatusText] = useState('');
+  const [statusText, setStatusText] = useState("");
   const [isCapturing, setIsCapturing] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const currentPointsRef = useRef<Point[] | null>(null);
   const dragStartRef = useRef<Point | null>(null);
@@ -103,11 +113,22 @@ export function OverlayApp() {
   const saveTimerRef = useRef(0);
   const editingInputRef = useRef<HTMLTextAreaElement | null>(null);
   const editingPointRef = useRef<Point | null>(null);
+  const selectionDragRef = useRef<{
+    kind: "move" | "resize";
+    object: AnnotationObject;
+    start: Point;
+    handle: number;
+    baseline: AnnotationObject[];
+  } | null>(null);
+  const widthEditBaselineRef = useRef<AnnotationObject[] | null>(null);
 
   const objectsCanvasRef = useRef<HTMLCanvasElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const storageKey = useCallback(() => `${STORAGE_KEY_PREFIX}${tabId}`, [tabId]);
+  const storageKey = useCallback(
+    () => `${STORAGE_KEY_PREFIX}${tabId}`,
+    [tabId],
+  );
 
   const restoreState = useCallback(async () => {
     if (tabId < 0) return;
@@ -139,8 +160,8 @@ export function OverlayApp() {
       canvas.height = Math.round(height * dpr);
     }
 
-    const objectsCtx = objectsCanvas.getContext('2d')!;
-    const liveCtx = liveCanvas.getContext('2d')!;
+    const objectsCtx = objectsCanvas.getContext("2d")!;
+    const liveCtx = liveCanvas.getContext("2d")!;
     objectsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -150,14 +171,14 @@ export function OverlayApp() {
   const redrawObjects = useCallback(() => {
     const objectsCanvas = objectsCanvasRef.current;
     if (!objectsCanvas) return;
-    const ctx = objectsCanvas.getContext('2d')!;
+    const ctx = objectsCanvas.getContext("2d")!;
     redrawAll(ctx, window.innerWidth, window.innerHeight, objects);
   }, [objects]);
 
   const clearLive = useCallback(() => {
     const liveCanvas = liveCanvasRef.current;
     if (!liveCanvas) return;
-    const ctx = liveCanvas.getContext('2d')!;
+    const ctx = liveCanvas.getContext("2d")!;
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   }, []);
 
@@ -166,29 +187,36 @@ export function OverlayApp() {
     if (!liveCanvas) return;
 
     const capturing = drawModeEnabled && CAPTURING_TOOLS.has(tool);
-    liveCanvas.style.pointerEvents = capturing ? 'auto' : 'none';
+    liveCanvas.style.pointerEvents = capturing ? "auto" : "none";
     liveCanvas.style.cursor = !capturing
-      ? ''
-      : tool === 'eraser'
-        ? eraserCursor(strokeWidth)
-        : tool === 'text'
-          ? 'text'
-          : 'crosshair';
+      ? ""
+      : tool === "select"
+        ? selectedId
+          ? "move"
+          : "default"
+        : tool === "eraser"
+          ? eraserCursor(strokeWidth)
+          : tool === "text"
+            ? "text"
+            : "crosshair";
 
-    const needsRaf = drawModeEnabled && (tool === 'laser' || tool === 'spotlight');
+    const needsRaf =
+      drawModeEnabled && (tool === "laser" || tool === "spotlight");
     if (needsRaf && !rafHandleRef.current) {
       const renderLiveOverlay = () => {
         if (!laserActiveRef.current) return;
 
         const liveCanvas = liveCanvasRef.current;
         if (!liveCanvas) return;
-        const ctx = liveCanvas.getContext('2d')!;
+        const ctx = liveCanvas.getContext("2d")!;
 
         const now = performance.now();
-        laserTrailRef.current = laserTrailRef.current.filter((p) => now - p.time < LASER_TRAIL_MS);
+        laserTrailRef.current = laserTrailRef.current.filter(
+          (p) => now - p.time < LASER_TRAIL_MS,
+        );
         clearLive();
 
-        if (tool === 'laser') {
+        if (tool === "laser") {
           for (const entry of laserTrailRef.current) {
             const age = (now - entry.time) / LASER_TRAIL_MS;
             const alpha = 1 - age;
@@ -199,16 +227,16 @@ export function OverlayApp() {
             ctx.fill();
           }
           ctx.beginPath();
-          ctx.fillStyle = '#ef4444';
+          ctx.fillStyle = "#ef4444";
           ctx.arc(cursorRef.current.x, cursorRef.current.y, 6, 0, Math.PI * 2);
           ctx.fill();
         } else {
           const w = window.innerWidth;
           const h = window.innerHeight;
-          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
           ctx.fillRect(0, 0, w, h);
           ctx.save();
-          ctx.globalCompositeOperation = 'destination-out';
+          ctx.globalCompositeOperation = "destination-out";
           const radius = 110;
           const gradient = ctx.createRadialGradient(
             cursorRef.current.x,
@@ -216,14 +244,20 @@ export function OverlayApp() {
             0,
             cursorRef.current.x,
             cursorRef.current.y,
-            radius
+            radius,
           );
-          gradient.addColorStop(0, 'rgba(0,0,0,1)');
-          gradient.addColorStop(0.75, 'rgba(0,0,0,1)');
-          gradient.addColorStop(1, 'rgba(0,0,0,0)');
+          gradient.addColorStop(0, "rgba(0,0,0,1)");
+          gradient.addColorStop(0.75, "rgba(0,0,0,1)");
+          gradient.addColorStop(1, "rgba(0,0,0,0)");
           ctx.fillStyle = gradient;
           ctx.beginPath();
-          ctx.arc(cursorRef.current.x, cursorRef.current.y, radius, 0, Math.PI * 2);
+          ctx.arc(
+            cursorRef.current.x,
+            cursorRef.current.y,
+            radius,
+            0,
+            Math.PI * 2,
+          );
           ctx.fill();
           ctx.restore();
         }
@@ -239,7 +273,7 @@ export function OverlayApp() {
       rafHandleRef.current = 0;
       clearLive();
     }
-  }, [drawModeEnabled, tool, strokeWidth, clearLive]);
+  }, [drawModeEnabled, tool, strokeWidth, clearLive, selectedId]);
 
   const makeId = useCallback(() => {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -249,6 +283,7 @@ export function OverlayApp() {
     currentPointsRef.current = null;
     dragStartRef.current = null;
     eraseBaselineRef.current = null;
+    selectionDragRef.current = null;
     clearLive();
   }, [clearLive]);
 
@@ -263,7 +298,7 @@ export function OverlayApp() {
       setFuture([]);
       setObjects(next);
     },
-    [objects]
+    [objects],
   );
 
   /**
@@ -291,7 +326,7 @@ export function OverlayApp() {
       ...objects,
       {
         id: makeId(),
-        type: 'text',
+        type: "text",
         color,
         strokeWidth,
         createdAt: Date.now(),
@@ -307,8 +342,8 @@ export function OverlayApp() {
       if (editingInputRef.current) commitTextInput();
       if (!shadowRoot) return;
 
-      const input = document.createElement('textarea');
-      input.className = 'text-input';
+      const input = document.createElement("textarea");
+      input.className = "text-input";
       input.style.left = `${point.x}px`;
       input.style.top = `${point.y - strokeWidth * 4}px`;
       input.style.color = color;
@@ -320,20 +355,94 @@ export function OverlayApp() {
       editingPointRef.current = point;
 
       const commitText = () => commitTextInput();
-      input.addEventListener('blur', commitText);
-      input.addEventListener('keydown', (ke) => {
-        if (ke.key === 'Enter' && !ke.shiftKey) {
+      input.addEventListener("blur", commitText);
+      input.addEventListener("keydown", (ke) => {
+        if (ke.key === "Enter" && !ke.shiftKey) {
           ke.preventDefault();
           commitText();
-        } else if (ke.key === 'Escape') {
+        } else if (ke.key === "Escape") {
           ke.preventDefault();
-          input.value = '';
+          input.value = "";
           commitText();
         }
       });
     },
-    [color, strokeWidth, commitTextInput, shadowRoot]
+    [color, strokeWidth, commitTextInput, shadowRoot],
   );
+
+  const getSelectedHandle = useCallback(
+    (point: Point, ann: AnnotationObject) => {
+      if (ann.type !== "rectangle" && ann.type !== "ellipse") return -1;
+      const b = annotationBounds(ann);
+      const corners = [
+        { x: b.left, y: b.top },
+        { x: b.right, y: b.top },
+        { x: b.left, y: b.bottom },
+        { x: b.right, y: b.bottom },
+      ];
+      return corners.findIndex(
+        (corner) => Math.hypot(point.x - corner.x, point.y - corner.y) <= 10,
+      );
+    },
+    [],
+  );
+
+  const drawSelection = useCallback(
+    (ctx: CanvasRenderingContext2D, ann: AnnotationObject) => {
+      const b = annotationBounds(ann);
+      ctx.save();
+      ctx.strokeStyle = "#A78BFA";
+      ctx.fillStyle = "#1C1C20";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+      ctx.setLineDash([]);
+      if (ann.type === "rectangle" || ann.type === "ellipse") {
+        for (const corner of [
+          { x: b.left, y: b.top },
+          { x: b.right, y: b.top },
+          { x: b.left, y: b.bottom },
+          { x: b.right, y: b.bottom },
+        ]) {
+          ctx.beginPath();
+          ctx.arc(corner.x, corner.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    },
+    [],
+  );
+
+  const findSelectable = useCallback(
+    (point: Point, list: AnnotationObject[]) => {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const candidate = list[i]!;
+        if (
+          candidate.type === "rectangle" || candidate.type === "ellipse"
+            ? shapeContains(point, candidate, 8)
+            : hitTest(point, candidate)
+        )
+          return candidate;
+      }
+      return undefined;
+    },
+    [],
+  );
+
+  const redrawSelection = useCallback(() => {
+    clearLive();
+    if (!drawModeEnabled || !selectedId) return;
+    const selected = objects.find((object) => object.id === selectedId);
+    const ctx = liveCanvasRef.current?.getContext("2d");
+    if (selected && ctx) drawSelection(ctx, selected);
+  }, [clearLive, drawModeEnabled, drawSelection, objects, selectedId]);
+
+  const cancelPointer = useCallback(() => {
+    resetDrag();
+    redrawSelection();
+  }, [redrawSelection, resetDrag]);
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -341,24 +450,63 @@ export function OverlayApp() {
       const point = { x: e.clientX, y: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId);
 
-      if (tool === 'eraser') {
+      if (tool === "eraser") {
         eraseBaselineRef.current = objects;
         eraseAt(point);
         return;
       }
 
-      if (tool === 'text') {
+      if (tool === "select") {
+        const selected = objects.find((object) => object.id === selectedId);
+        const handle = selected ? getSelectedHandle(point, selected) : -1;
+        if (selected && handle >= 0) {
+          selectionDragRef.current = {
+            kind: "resize",
+            object: selected,
+            start: point,
+            handle,
+            baseline: objects,
+          };
+          return;
+        }
+        const target = findSelectable(point, objects);
+        setSelectedId(target?.id ?? null);
+        if (target)
+          selectionDragRef.current = {
+            kind: "move",
+            object: target,
+            start: point,
+            handle: -1,
+            baseline: objects,
+          };
+        return;
+      }
+
+      if (tool === "text") {
         beginTextInput(point);
         return;
       }
 
-      if (tool === 'pencil' || tool === 'highlighter') {
+      if (tool === "pencil" || tool === "highlighter") {
         currentPointsRef.current = [point];
-      } else if (tool === 'arrow' || tool === 'rectangle' || tool === 'ellipse') {
+      } else if (
+        tool === "arrow" ||
+        tool === "rectangle" ||
+        tool === "ellipse"
+      ) {
         dragStartRef.current = point;
       }
     },
-    [drawModeEnabled, tool, objects, beginTextInput, eraseAt]
+    [
+      drawModeEnabled,
+      tool,
+      objects,
+      selectedId,
+      getSelectedHandle,
+      findSelectable,
+      beginTextInput,
+      eraseAt,
+    ],
   );
 
   const onPointerMove = useCallback(
@@ -367,20 +515,39 @@ export function OverlayApp() {
       const point = { x: e.clientX, y: e.clientY };
       // Eraser rubs out everything the cursor is dragged across, so it runs
       // before the stroke-preview branches and needs no drag state of its own.
-      if (tool === 'eraser') {
+      if (tool === "eraser") {
         if (eraseBaselineRef.current !== null) eraseAt(point);
+        return;
+      }
+
+      const selectionDrag = selectionDragRef.current;
+      if (tool === "select" && selectionDrag) {
+        const dx = point.x - selectionDrag.start.x;
+        const dy = point.y - selectionDrag.start.y;
+        const preview =
+          selectionDrag.kind === "resize" &&
+          (selectionDrag.object.type === "rectangle" ||
+            selectionDrag.object.type === "ellipse")
+            ? resizeShape(selectionDrag.object, selectionDrag.handle, point)
+            : translateAnnotation(selectionDrag.object, dx, dy);
+        clearLive();
+        drawAnnotation(liveCanvasRef.current!.getContext("2d")!, preview);
+        drawSelection(liveCanvasRef.current!.getContext("2d")!, preview);
         return;
       }
 
       const liveCanvas = liveCanvasRef.current;
       if (!liveCanvas) return;
-      const ctx = liveCanvas.getContext('2d')!;
+      const ctx = liveCanvas.getContext("2d")!;
 
-      if (currentPointsRef.current && (tool === 'pencil' || tool === 'highlighter')) {
+      if (
+        currentPointsRef.current &&
+        (tool === "pencil" || tool === "highlighter")
+      ) {
         currentPointsRef.current.push(point);
         clearLive();
         drawAnnotation(ctx, {
-          id: 'preview',
+          id: "preview",
           type: tool,
           color,
           strokeWidth,
@@ -390,11 +557,11 @@ export function OverlayApp() {
         return;
       }
 
-      if (dragStartRef.current && tool === 'arrow') {
+      if (dragStartRef.current && tool === "arrow") {
         clearLive();
         drawAnnotation(ctx, {
-          id: 'preview',
-          type: 'arrow',
+          id: "preview",
+          type: "arrow",
           color,
           strokeWidth,
           createdAt: 0,
@@ -405,10 +572,13 @@ export function OverlayApp() {
         return;
       }
 
-      if (dragStartRef.current && (tool === 'rectangle' || tool === 'ellipse')) {
+      if (
+        dragStartRef.current &&
+        (tool === "rectangle" || tool === "ellipse")
+      ) {
         clearLive();
         drawAnnotation(ctx, {
-          id: 'preview',
+          id: "preview",
           type: tool,
           color,
           strokeWidth,
@@ -419,7 +589,17 @@ export function OverlayApp() {
         });
       }
     },
-    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, clearLive, eraseAt]
+    [
+      drawModeEnabled,
+      tool,
+      color,
+      strokeWidth,
+      headStyle,
+      filled,
+      clearLive,
+      eraseAt,
+      drawSelection,
+    ],
   );
 
   const onPointerUp = useCallback(
@@ -430,12 +610,38 @@ export function OverlayApp() {
 
       // An erase drag already mutated `objects` directly; record the whole drag
       // as one undo entry now that it's finished.
-      if (tool === 'eraser') {
+      if (tool === "eraser") {
         const baseline = eraseBaselineRef.current;
         eraseBaselineRef.current = null;
         if (baseline && baseline !== objects) {
           setPast((p) => [...p, baseline].slice(-HISTORY_LIMIT));
           setFuture([]);
+        }
+        redrawSelection();
+        return;
+      }
+
+      const selectionDrag = selectionDragRef.current;
+      selectionDragRef.current = null;
+      if (tool === "select" && selectionDrag) {
+        const point = { x: e.clientX, y: e.clientY };
+        const dx = point.x - selectionDrag.start.x;
+        const dy = point.y - selectionDrag.start.y;
+        const updated =
+          selectionDrag.kind === "resize" &&
+          (selectionDrag.object.type === "rectangle" ||
+            selectionDrag.object.type === "ellipse")
+            ? resizeShape(selectionDrag.object, selectionDrag.handle, point)
+            : translateAnnotation(selectionDrag.object, dx, dy);
+        const next = selectionDrag.baseline.map((object) =>
+          object.id === updated.id ? updated : object,
+        );
+        if (dx !== 0 || dy !== 0 || selectionDrag.kind === "resize")
+          commit(next);
+        clearLive();
+        if (drawModeEnabled) {
+          const ctx = liveCanvasRef.current?.getContext("2d");
+          if (ctx) drawSelection(ctx, updated);
         }
         return;
       }
@@ -448,7 +654,7 @@ export function OverlayApp() {
       currentPointsRef.current = null;
       dragStartRef.current = null;
 
-      if (points && (tool === 'pencil' || tool === 'highlighter')) {
+      if (points && (tool === "pencil" || tool === "highlighter")) {
         if (points.length > 1) {
           commit([
             ...objects,
@@ -462,12 +668,12 @@ export function OverlayApp() {
             },
           ]);
         }
-      } else if (dragStart && tool === 'arrow') {
+      } else if (dragStart && tool === "arrow") {
         commit([
           ...objects,
           {
             id: makeId(),
-            type: 'arrow',
+            type: "arrow",
             color,
             strokeWidth,
             createdAt: Date.now(),
@@ -476,7 +682,7 @@ export function OverlayApp() {
             headStyle,
           },
         ]);
-      } else if (dragStart && (tool === 'rectangle' || tool === 'ellipse')) {
+      } else if (dragStart && (tool === "rectangle" || tool === "ellipse")) {
         commit([
           ...objects,
           {
@@ -495,14 +701,61 @@ export function OverlayApp() {
       }
 
       clearLive();
+      redrawSelection();
     },
-    [drawModeEnabled, tool, color, strokeWidth, headStyle, filled, makeId, clearLive, commit, objects]
+    [
+      drawModeEnabled,
+      tool,
+      color,
+      strokeWidth,
+      headStyle,
+      filled,
+      makeId,
+      clearLive,
+      drawSelection,
+      redrawSelection,
+      commit,
+      objects,
+    ],
   );
+
+  const changeWidth = useCallback(
+    (width: number) => {
+      setStrokeWidth(width);
+      const selected = objects.find((object) => object.id === selectedId);
+      if (
+        selected &&
+        (selected.type === "rectangle" || selected.type === "ellipse")
+      ) {
+        setObjects((prev) =>
+          prev.map((object) =>
+            object.id === selectedId
+              ? { ...object, strokeWidth: width }
+              : object,
+          ),
+        );
+      }
+    },
+    [objects, selectedId],
+  );
+
+  const finishWidthEdit = useCallback(() => {
+    const baseline = widthEditBaselineRef.current;
+    widthEditBaselineRef.current = null;
+    if (baseline && baseline !== objects) {
+      setPast((pastStates) => [...pastStates, baseline].slice(-HISTORY_LIMIT));
+      setFuture([]);
+    }
+  }, [objects]);
+
+  const beginWidthEdit = useCallback(() => {
+    widthEditBaselineRef.current = objects;
+  }, [objects]);
 
   const handleClear = useCallback(() => {
     if (objects.length === 0) return;
     commit([]);
-    setStatusText('Cleared');
+    setStatusText("Cleared");
   }, [commit, objects]);
 
   const cycleTool = useCallback(() => {
@@ -529,47 +782,47 @@ export function OverlayApp() {
   }, [future, objects]);
 
   const savePng = useCallback(async () => {
-    setStatusText('Capturing...');
+    setStatusText("Capturing...");
     setIsCapturing(true);
     try {
       // Let the browser actually paint the toolbar as hidden before requesting
       // the screenshot — a state update alone doesn't guarantee the next
       // compositor frame reflects it yet.
       await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
 
       const response = (await chrome.runtime.sendMessage({
-        kind: 'capture-visible-tab',
+        kind: "capture-visible-tab",
       } satisfies ContentToBackgroundMessage)) as BackgroundToContentMessage;
 
-      if (response.kind === 'capture-visible-tab-error') {
+      if (response.kind === "capture-visible-tab-error") {
         setStatusText(`Save failed: ${response.error}`);
         return;
       }
-      if (response.kind !== 'capture-visible-tab-result') return;
+      if (response.kind !== "capture-visible-tab-result") return;
 
       const screenshot = await loadImage(response.dataUrl);
       const dpr = window.devicePixelRatio || 1;
-      const composite = document.createElement('canvas');
+      const composite = document.createElement("canvas");
       composite.width = Math.round(window.innerWidth * dpr);
       composite.height = Math.round(window.innerHeight * dpr);
-      const ctx = composite.getContext('2d')!;
+      const ctx = composite.getContext("2d")!;
       ctx.drawImage(screenshot, 0, 0, composite.width, composite.height);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       for (const obj of objects) drawAnnotation(ctx, obj);
 
-      const dataUrl = composite.toDataURL('image/png');
-      const filename = `capann-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      const dataUrl = composite.toDataURL("image/png");
+      const filename = `capann-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
       await chrome.runtime.sendMessage({
-        kind: 'download-png',
+        kind: "download-png",
         dataUrl,
         filename,
       } satisfies ContentToBackgroundMessage);
-      setStatusText('Saved!');
+      setStatusText("Saved!");
     } catch (err) {
-      setStatusText('Save failed');
-      console.error('[Capann] save failed', err);
+      setStatusText("Save failed");
+      console.error("[Capann] save failed", err);
     } finally {
       setIsCapturing(false);
     }
@@ -580,8 +833,21 @@ export function OverlayApp() {
       setTool(newTool);
       resetDrag();
     },
-    [resetDrag]
+    [resetDrag],
   );
+
+  const selectedShape = objects.find((object) => object.id === selectedId);
+  const displayedWidth =
+    selectedShape &&
+    (selectedShape.type === "rectangle" || selectedShape.type === "ellipse")
+      ? selectedShape.strokeWidth
+      : strokeWidth;
+
+  useEffect(() => {
+    redrawSelection();
+    window.addEventListener("resize", redrawSelection);
+    return () => window.removeEventListener("resize", redrawSelection);
+  }, [redrawSelection, tool]);
 
   const handleDrawModeToggle = useCallback(
     (enabled: boolean) => {
@@ -591,7 +857,7 @@ export function OverlayApp() {
         resetDrag();
       }
     },
-    [resetDrag]
+    [resetDrag],
   );
 
   /**
@@ -604,7 +870,7 @@ export function OverlayApp() {
     const next = !drawModeEnabled;
     setDrawModeEnabled(next);
     if (next) {
-      setTool('pencil');
+      setTool("pencil");
     } else {
       laserActiveRef.current = false;
     }
@@ -616,7 +882,7 @@ export function OverlayApp() {
     const init = async () => {
       try {
         const response = (await chrome.runtime.sendMessage({
-          kind: 'get-tab-id',
+          kind: "get-tab-id",
         } satisfies ContentToBackgroundMessage)) as GetTabIdResponse;
         setTabId(response.tabId);
       } catch {
@@ -651,7 +917,7 @@ export function OverlayApp() {
   // Clear status text after timeout
   useEffect(() => {
     if (statusText) {
-      const timer = setTimeout(() => setStatusText(''), 2500);
+      const timer = setTimeout(() => setStatusText(""), 2500);
       return () => clearTimeout(timer);
     }
   }, [statusText]);
@@ -659,18 +925,21 @@ export function OverlayApp() {
   // Handle window resize
   useEffect(() => {
     resizeCanvases();
-    window.addEventListener('resize', resizeCanvases);
-    return () => window.removeEventListener('resize', resizeCanvases);
+    window.addEventListener("resize", resizeCanvases);
+    return () => window.removeEventListener("resize", resizeCanvases);
   }, [resizeCanvases]);
 
   // Handle window pointer move for laser/spotlight
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
       cursorRef.current = { x: e.clientX, y: e.clientY };
-      if (drawModeEnabled && (tool === 'laser' || tool === 'spotlight')) {
+      if (drawModeEnabled && (tool === "laser" || tool === "spotlight")) {
         laserActiveRef.current = true;
-        if (tool === 'laser') {
-          laserTrailRef.current.push({ point: cursorRef.current, time: performance.now() });
+        if (tool === "laser") {
+          laserTrailRef.current.push({
+            point: cursorRef.current,
+            time: performance.now(),
+          });
         }
       }
     };
@@ -679,34 +948,36 @@ export function OverlayApp() {
       laserActiveRef.current = false;
     };
 
-    window.addEventListener('pointermove', handlePointerMove, { passive: true });
-    window.addEventListener('pointerleave', handlePointerLeave);
+    window.addEventListener("pointermove", handlePointerMove, {
+      passive: true,
+    });
+    window.addEventListener("pointerleave", handlePointerLeave);
     return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerleave', handlePointerLeave);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerleave", handlePointerLeave);
     };
   }, [drawModeEnabled, tool]);
 
   // Handle Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && drawModeEnabled) setDrawModeEnabled(false);
+      if (e.key === "Escape" && drawModeEnabled) setDrawModeEnabled(false);
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [drawModeEnabled]);
 
   // Handle messages from background
   useEffect(() => {
     const handleMessage = (message: BackgroundToContentMessage) => {
       switch (message.kind) {
-        case 'toggle-draw-mode':
+        case "toggle-draw-mode":
           toggleDrawMode();
           break;
-        case 'clear-annotations':
+        case "clear-annotations":
           handleClear();
           break;
-        case 'cycle-tool':
+        case "cycle-tool":
           cycleTool();
           break;
       }
@@ -748,7 +1019,9 @@ export function OverlayApp() {
       <Toolbar
         onToolChange={handleToolChange}
         onColorChange={setColor}
-        onWidthChange={setStrokeWidth}
+        onWidthChange={changeWidth}
+        onWidthEditStart={beginWidthEdit}
+        onWidthEditComplete={finishWidthEdit}
         onHeadStyleChange={setHeadStyle}
         onFilledChange={setFilled}
         onClear={handleClear}
@@ -762,7 +1035,7 @@ export function OverlayApp() {
         drawModeEnabled={drawModeEnabled}
         currentTool={tool}
         currentColor={color}
-        currentWidth={strokeWidth}
+        currentWidth={displayedWidth}
         currentHeadStyle={headStyle}
         currentFilled={filled}
         statusText={statusText}
@@ -774,7 +1047,7 @@ export function OverlayApp() {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={() => resetDrag()}
+          onPointerCancel={cancelPointer}
         />
       </div>
     </>
