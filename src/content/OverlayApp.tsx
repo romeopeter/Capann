@@ -19,9 +19,12 @@ import type {
   AnnotationObject,
   ArrowHeadStyle,
   BackgroundToContentMessage,
+  CaptureVisibleTabResponse,
   ContentToBackgroundMessage,
   GetTabIdResponse,
   Point,
+  RecordOptions,
+  RecordingStatus,
   TabAnnotationState,
   ToolId,
 } from "../shared/types";
@@ -84,6 +87,10 @@ function eraserCursor(strokeWidth: number): string {
 export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
+  const [uiView, setUiView] = useState<"closed" | "chooser" | "annotate" | "record">("closed");
+  const [captureHidden, setCaptureHidden] = useState(true);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({ state: "idle" });
+  const [recordOptions, setRecordOptions] = useState<RecordOptions>({ camera: true, microphone: true, tabAudio: true });
   const [drawModeEnabled, setDrawModeEnabled] = useState(false);
   const [tool, setTool] = useState<ToolId>("pencil");
   const [color, setColor] = useState("#A78BFA");
@@ -95,7 +102,6 @@ export function OverlayApp() {
   const [past, setPast] = useState<AnnotationObject[][]>([]);
   const [future, setFuture] = useState<AnnotationObject[][]>([]);
   const [statusText, setStatusText] = useState("");
-  const [isCapturing, setIsCapturing] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const currentPointsRef = useRef<Point[] | null>(null);
@@ -783,18 +789,16 @@ export function OverlayApp() {
 
   const savePng = useCallback(async () => {
     setStatusText("Capturing...");
-    setIsCapturing(true);
     try {
-      // Let the browser actually paint the toolbar as hidden before requesting
-      // the screenshot — a state update alone doesn't guarantee the next
-      // compositor frame reflects it yet.
+      // Let the browser finish a compositor frame before capture so the PNG
+      // matches what was on screen when the user asked to save.
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
 
       const response = (await chrome.runtime.sendMessage({
         kind: "capture-visible-tab",
-      } satisfies ContentToBackgroundMessage)) as BackgroundToContentMessage;
+      } satisfies ContentToBackgroundMessage)) as CaptureVisibleTabResponse;
 
       if (response.kind === "capture-visible-tab-error") {
         setStatusText(`Save failed: ${response.error}`);
@@ -823,8 +827,6 @@ export function OverlayApp() {
     } catch (err) {
       setStatusText("Save failed");
       console.error("[Capann] save failed", err);
-    } finally {
-      setIsCapturing(false);
     }
   }, [objects]);
 
@@ -860,22 +862,28 @@ export function OverlayApp() {
     [resetDrag],
   );
 
-  /**
-   * Toggle driven by the toolbar icon / Alt+Shift+S. Activating always drops the
-   * user into pencil so the extension is immediately usable; the toolbar's own
-   * tool buttons go through handleDrawModeToggle instead, which preserves the
-   * tool the user just picked.
-   */
-  const toggleDrawMode = useCallback(() => {
-    const next = !drawModeEnabled;
-    setDrawModeEnabled(next);
-    if (next) {
-      setTool("pencil");
-    } else {
-      laserActiveRef.current = false;
+  const startRecording = useCallback(async () => {
+    commitTextInput();
+    handleDrawModeToggle(false);
+    setUiView("record");
+    setRecordingStatus({ state: "starting" });
+    setCaptureHidden(true);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    try {
+      const response = await chrome.runtime.sendMessage({
+        kind: "record-start",
+        ...recordOptions,
+      } satisfies ContentToBackgroundMessage) as { ok?: boolean; error?: string };
+      if (!response?.ok) {
+        const status: RecordingStatus = { state: "error", error: response?.error ?? "Could not start recording." };
+        setRecordingStatus(status);
+        setCaptureHidden(false);
+      }
+    } catch (error) {
+      setRecordingStatus({ state: "error", error: error instanceof Error ? error.message : "Could not start recording." });
+      setCaptureHidden(false);
     }
-    resetDrag();
-  }, [drawModeEnabled, resetDrag]);
+  }, [commitTextInput, handleDrawModeToggle, recordOptions]);
 
   // Initialize
   useEffect(() => {
@@ -885,12 +893,25 @@ export function OverlayApp() {
           kind: "get-tab-id",
         } satisfies ContentToBackgroundMessage)) as GetTabIdResponse;
         setTabId(response.tabId);
+        setRecordingStatus(response.recordingStatus);
+        const isRecording = response.recordingStatus.state === "recording" || response.recordingStatus.state === "paused" || response.recordingStatus.state === "starting";
+        setCaptureHidden(isRecording);
+        if (isRecording) setUiView("record");
       } catch {
         setTabId(-1);
+        setCaptureHidden(false);
       }
     };
     void init();
   }, []);
+
+  // Keep the entire shadow-root host out of tabCapture frames during recording,
+  // including canvases, toolbar, and any active text input.
+  useEffect(() => {
+    if (shadowRoot?.host instanceof HTMLElement) {
+      shadowRoot.host.style.visibility = captureHidden ? "hidden" : "visible";
+    }
+  }, [captureHidden, shadowRoot]);
 
   // Restore state when tabId changes
   useEffect(() => {
@@ -961,18 +982,18 @@ export function OverlayApp() {
   // Handle Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && drawModeEnabled) setDrawModeEnabled(false);
+      if (e.key === "Escape" && drawModeEnabled && !captureHidden) setDrawModeEnabled(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [drawModeEnabled]);
+  }, [drawModeEnabled, captureHidden]);
 
-  // Handle messages from background
+  // Handle extension action, keyboard, and recorder status messages.
   useEffect(() => {
     const handleMessage = (message: BackgroundToContentMessage) => {
       switch (message.kind) {
-        case "toggle-draw-mode":
-          toggleDrawMode();
+        case "toggle-capann-ui":
+          setUiView((view) => view === "closed" ? "chooser" : "closed");
           break;
         case "clear-annotations":
           handleClear();
@@ -980,12 +1001,41 @@ export function OverlayApp() {
         case "cycle-tool":
           cycleTool();
           break;
+        case "recording-status": {
+          setRecordingStatus(message.status);
+          const active = message.status.state === "recording" || message.status.state === "paused" || message.status.state === "starting";
+          setCaptureHidden(active);
+          if (!active) {
+            setUiView("record");
+            setStatusText(message.status.state === "saved" ? "Recording saved" : message.status.state === "discarded" ? "Recording discarded" : message.status.state === "error" ? message.status.error : "");
+          }
+          break;
+        }
       }
     };
 
     chrome.runtime.onMessage.addListener(handleMessage);
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
-  }, [handleClear, cycleTool, toggleDrawMode]);
+  }, [handleClear, cycleTool]);
+
+  const hiddenByCapture = captureHidden ? { visibility: "hidden" as const } : undefined;
+  const closeUi = () => {
+    setUiView("closed");
+    handleDrawModeToggle(false);
+  };
+  const surface: React.CSSProperties = {
+    position: "fixed", top: "48px", right: "56px", zIndex: 2147483647,
+    boxSizing: "border-box", width: "min(280px, calc(100vw - 32px))", padding: "16px",
+    borderRadius: "24px", background: "rgba(28,28,32,0.88)", color: "#F5F5F7",
+    border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)", font: "400 13px/1.45 Manrope, Inter, system-ui, sans-serif",
+    boxShadow: "0 18px 52px rgba(0,0,0,.28)",
+  };
+  const surfaceButton: React.CSSProperties = {
+    border: "1px solid rgba(255,255,255,.1)", borderRadius: "14px", padding: "12px 14px",
+    background: "#26262B", color: "#F5F5F7", cursor: "pointer", font: "500 13px/1.2 Manrope, Inter, system-ui, sans-serif",
+  };
+  const recordingIsActive = recordingStatus.state === "recording" || recordingStatus.state === "paused" || recordingStatus.state === "starting";
 
   return (
     <>
@@ -1016,39 +1066,84 @@ export function OverlayApp() {
           line-height: 1.2;
         }
       `}</style>
-      <Toolbar
-        onToolChange={handleToolChange}
-        onColorChange={setColor}
-        onWidthChange={changeWidth}
-        onWidthEditStart={beginWidthEdit}
-        onWidthEditComplete={finishWidthEdit}
-        onHeadStyleChange={setHeadStyle}
-        onFilledChange={setFilled}
-        onClear={handleClear}
-        onSavePng={savePng}
-        onDrawModeToggle={handleDrawModeToggle}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        canUndo={past.length > 0}
-        canRedo={future.length > 0}
-        isCapturing={isCapturing}
-        drawModeEnabled={drawModeEnabled}
-        currentTool={tool}
-        currentColor={color}
-        currentWidth={displayedWidth}
-        currentHeadStyle={headStyle}
-        currentFilled={filled}
-        statusText={statusText}
-      />
-      <div className="canvas-wrapper">
-        <canvas ref={objectsCanvasRef} />
-        <canvas
-          ref={liveCanvasRef}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={cancelPointer}
-        />
+      <div style={hiddenByCapture}>
+        {uiView === "chooser" && <section style={surface} aria-label="Capann workspace chooser">
+          <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+            <img src={chrome.runtime.getURL("icons/capann-logo.png")} alt="" width="32" height="32" style={{ borderRadius: 9 }} />
+            <div style={{ flex: 1 }}><strong style={{ fontSize: 15 }}>Capann</strong><div style={{ color: "#8B8B93", fontSize: 11 }}>Choose a workspace</div></div>
+            <button onClick={closeUi} aria-label="Close Capann" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>×</button>
+          </header>
+          <div style={{ display: "grid", gap: 8 }}>
+            <button onClick={() => { setStatusText(""); setRecordingStatus({ state: "idle" }); setUiView("record"); }} style={{ ...surfaceButton, textAlign: "left" }}><b>●　Record</b><span style={{ display: "block", margin: "5px 0 0 24px", color: "#8B8B93", fontSize: 11 }}>Capture this tab with camera and audio</span></button>
+            <button onClick={() => { setUiView("annotate"); handleDrawModeToggle(false); }} style={{ ...surfaceButton, textAlign: "left" }}><b>✎　Annotate</b><span style={{ display: "block", margin: "5px 0 0 24px", color: "#8B8B93", fontSize: 11 }}>Draw and mark up this tab</span></button>
+          </div>
+        </section>}
+
+        {uiView === "annotate" && <>
+          <Toolbar
+            defaultExpanded
+            onToolChange={handleToolChange}
+            onColorChange={setColor}
+            onWidthChange={changeWidth}
+            onWidthEditStart={beginWidthEdit}
+            onWidthEditComplete={finishWidthEdit}
+            onHeadStyleChange={setHeadStyle}
+            onFilledChange={setFilled}
+            onClear={handleClear}
+            onSavePng={() => void savePng()}
+            onDrawModeToggle={handleDrawModeToggle}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            canUndo={past.length > 0}
+            canRedo={future.length > 0}
+            drawModeEnabled={drawModeEnabled}
+            currentTool={tool}
+            currentColor={color}
+            currentWidth={displayedWidth}
+            currentHeadStyle={headStyle}
+            currentFilled={filled}
+            statusText={statusText}
+          />
+          <button onClick={closeUi} title="Close Capann" aria-label="Close Capann" style={{ position: "fixed", top: "52px", right: "278px", zIndex: 2147483647, width: 30, height: 30, border: "1px solid rgba(255,255,255,.1)", borderRadius: 999, background: "rgba(28,28,32,.9)", color: "#8B8B93", cursor: "pointer" }}>×</button>
+        </>}
+
+        {uiView === "record" && <section style={surface} aria-label="Capann recorder">
+          <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <img src={chrome.runtime.getURL("icons/capann-logo.png")} alt="" width="30" height="30" style={{ borderRadius: 8 }} />
+            <strong style={{ flex: 1, fontSize: 15 }}>Record this tab</strong>
+            {!recordingIsActive && <button onClick={() => setUiView("chooser")} aria-label="Back to Capann choices" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>‹</button>}
+            {!recordingIsActive && <button onClick={closeUi} aria-label="Close Capann" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>×</button>}
+          </header>
+          <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>Capann’s UI and annotations are hidden from the saved video.</p>
+          <div style={{ display: "grid", gap: 10 }}>
+            {([
+              ["Camera bubble", "camera"],
+              ["Microphone", "microphone"],
+              ["Tab audio", "tabAudio"],
+            ] as const).map(([label, key]) => <label key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: recordingIsActive ? "#66666F" : "#F5F5F7" }}>
+              {label}<input type="checkbox" checked={recordOptions[key]} disabled={recordingIsActive} onChange={(event) => setRecordOptions((options) => ({ ...options, [key]: event.target.checked }))} />
+            </label>)}
+          </div>
+          {!recordingIsActive && <button onClick={() => void startRecording()} style={{ ...surfaceButton, width: "100%", marginTop: 14, background: "#A78BFA", border: 0, color: "#17131F", fontWeight: 700 }}>Start recording</button>}
+          {recordingStatus.state === "starting" && <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>Preparing capture…</p>}
+          {recordingStatus.state === "recording" && <p role="status" style={{ color: "#86EFAC", margin: "14px 0 0" }}>Recording in progress. Use the Capann icon to stop and save, Alt+Shift+T to pause/resume, or Alt+Shift+C to discard.</p>}
+          {recordingStatus.state === "paused" && <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>Recording paused. Use Alt+Shift+T to resume or the Capann icon to save.</p>}
+          {recordingStatus.state === "error" && <p role="alert" style={{ color: "#FCA5A5", margin: "14px 0 0" }}>{recordingStatus.error}</p>}
+          {recordingStatus.state === "saved" && <p role="status" style={{ color: "#86EFAC", margin: "14px 0 0" }}>Saved {recordingStatus.filename}</p>}
+          {recordingStatus.state === "discarded" && <p role="status" style={{ color: "#8B8B93", margin: "14px 0 0" }}>Recording discarded.</p>}
+          {(recordingStatus.state === "recording" || recordingStatus.state === "paused") && recordingStatus.unavailable.length > 0 && <p style={{ color: "#F5E8A6", fontSize: 11 }}>Unavailable: {recordingStatus.unavailable.join(", ")}</p>}
+        </section>}
+
+        <div className="canvas-wrapper">
+          <canvas ref={objectsCanvasRef} />
+          <canvas
+            ref={liveCanvasRef}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={cancelPointer}
+          />
+        </div>
       </div>
     </>
   );

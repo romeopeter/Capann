@@ -2,7 +2,7 @@
  * toolbar.tsx
  *
  * Floating annotation toolbar component with expand/collapse animation.
- * Implements the Claude Design system with frosted glass aesthetics.
+ * Implements the Capann design system with frosted glass aesthetics.
  *
  * Key features:
  * - Expand/collapse animation (56px circle ↔ 216px rounded panel)
@@ -42,6 +42,7 @@ const HEAD_STYLES: { id: ArrowHeadStyle; label: string }[] = [
 const SHAPE_TOOLS: ToolId[] = ["rectangle", "ellipse"];
 
 export interface ToolbarProps {
+  defaultExpanded?: boolean;
   onToolChange: (tool: ToolId) => void;
   onColorChange: (color: string) => void;
   onWidthChange: (width: number) => void;
@@ -67,6 +68,7 @@ export interface ToolbarProps {
 }
 
 export function Toolbar({
+  defaultExpanded = false,
   onToolChange,
   onColorChange,
   onWidthChange,
@@ -90,7 +92,7 @@ export function Toolbar({
   currentFilled,
   statusText = "",
 }: ToolbarProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [timerOn, setTimerOn] = useState(false);
   const [maskOn, setMaskOn] = useState(false);
   const [maskMode, setMaskMode] = useState(0); // 0 = screen, 1 = blackout, 2 = whiteout

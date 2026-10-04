@@ -1,15 +1,4 @@
-/**
- * types.ts
- *
- * Shared TypeScript type definitions for Capann.
- * Central type system used across content scripts and background service worker.
- *
- * Key types:
- * - AnnotationObject: Union type for all annotation kinds (stroke, arrow, shape, text)
- * - ToolId: All available annotation tools
- * - Message types: Content ↔ Background communication contracts
- * - TabAnnotationState: Per-tab storage schema
- */
+/** Shared annotation, storage, and extension message contracts. */
 
 export interface Point {
   x: number;
@@ -63,32 +52,59 @@ export interface TextAnnotation extends AnnotationBase {
   fontSize: number;
 }
 
-export type AnnotationObject =
-  | StrokeAnnotation
-  | ArrowAnnotation
-  | ShapeAnnotation
-  | TextAnnotation;
+export type AnnotationObject = StrokeAnnotation | ArrowAnnotation | ShapeAnnotation | TextAnnotation;
 
 export interface TabAnnotationState {
   objects: AnnotationObject[];
 }
 
-/** Messages sent from the background service worker into a content script. */
+export interface RecordOptions {
+  camera: boolean;
+  microphone: boolean;
+  tabAudio: boolean;
+}
+
+export type RecordingStatus =
+  | { state: "idle" }
+  | { state: "starting" }
+  | { state: "recording"; startedAt: number; camera: boolean; microphone: boolean; tabAudio: boolean; unavailable: string[] }
+  | { state: "paused"; elapsedMs: number; camera: boolean; microphone: boolean; tabAudio: boolean; unavailable: string[] }
+  | { state: "error"; error: string }
+  | { state: "saved"; filename: string }
+  | { state: "discarded" };
+
 export type BackgroundToContentMessage =
-  | { kind: "toggle-draw-mode" }
+  | { kind: "toggle-capann-ui" }
   | { kind: "clear-annotations" }
   | { kind: "cycle-tool" }
+  | { kind: "recording-status"; status: RecordingStatus };
+
+export type CaptureVisibleTabResponse =
   | { kind: "capture-visible-tab-result"; dataUrl: string }
   | { kind: "capture-visible-tab-error"; error: string };
 
-/** Messages sent from a content script into the background service worker. */
 export type ContentToBackgroundMessage =
   | { kind: "get-tab-id" }
+  | { kind: "get-recording-status" }
   | { kind: "capture-visible-tab" }
-  | { kind: "download-png"; dataUrl: string; filename: string };
+  | { kind: "download-png"; dataUrl: string; filename: string }
+  | ({ kind: "record-start" } & RecordOptions);
+
+export type BackgroundToRecorderMessage =
+  | ({ kind: "offscreen-start"; streamId: string; tabId: number } & RecordOptions)
+  | { kind: "offscreen-pause" }
+  | { kind: "offscreen-resume" }
+  | { kind: "offscreen-stop" }
+  | { kind: "offscreen-discard" };
+
+export type RecorderToBackgroundMessage =
+  | { kind: "record-status"; status: RecordingStatus }
+  | { kind: "offscreen-new-stream-id"; tabId: number }
+  | { kind: "offscreen-close" };
 
 export interface GetTabIdResponse {
   tabId: number;
+  recordingStatus: RecordingStatus;
 }
 
 export const TOOL_LABELS: Record<ToolId, string> = {

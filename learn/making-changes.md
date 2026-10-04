@@ -9,6 +9,8 @@
 5. Update this handbook when a change alters architecture, annotation behavior, storage, or the contributor workflow.
 6. Run `npm run typecheck` and `npm run build` before handing off the change.
 
+For recording changes, also update [Recording](recording.md). Check all three typed message boundaries (content script, service worker, and offscreen document), preserve tab-specific capture invocation, and ensure capture errors do not result in a download.
+
 ## Adding an annotation behavior
 
 Update the annotation types first, then implement rendering and geometry/hit testing, wire pointer handling in `OverlayApp.tsx`, and add any toolbar control in `toolbar.tsx`. Verify saved data can be redrawn and exported. Keep pointer-drag previews temporary and group a completed gesture into one history action.

@@ -21,6 +21,9 @@ if (!document.getElementById('capann-host')) {
   const host = document.createElement('div');
   host.id = 'capann-host';
   host.style.all = 'initial';
+  // Prevent persisted annotations from flashing into a tab recording during
+  // page navigation; OverlayApp reveals the host after checking recorder state.
+  host.style.visibility = 'hidden';
   document.documentElement.append(host);
 
   const shadow = host.attachShadow({ mode: 'open' });

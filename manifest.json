@@ -16,7 +16,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Toggle Capann annotation mode (Alt+Shift+S)"
+    "default_title": "Open Capann on this page"
   },
   "background": {
     "service_worker": "background/service-worker.js"
@@ -35,27 +35,27 @@
       "matches": ["<all_urls>"]
     }
   ],
-  "permissions": ["storage", "activeTab", "downloads"],
+  "permissions": ["storage", "activeTab", "downloads", "tabCapture", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "commands": {
     "_execute_action": {
       "suggested_key": {
         "default": "Alt+Shift+S"
       },
-      "description": "Toggle Capann annotation mode"
+      "description": "Open Capann or stop the active recording"
     },
     "clear-annotations": {
       "suggested_key": {
         "default": "Alt+Shift+C"
       },
-      "description": "Clear all annotations on this tab"
+      "description": "Clear annotations, or discard a recording"
     },
     "cycle-tool": {
       "suggested_key": {
         "default": "Alt+Shift+T"
       },
-      "description": "Cycle to the next annotation tool"
+      "description": "Cycle tools, or pause/resume a recording"
     }
   },
-  "minimum_chrome_version": "102"
+  "minimum_chrome_version": "116"
 }
