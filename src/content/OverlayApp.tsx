@@ -31,14 +31,20 @@ import type {
 import { STORAGE_KEY_PREFIX } from "../shared/types";
 import {
   annotationBounds,
+  benderHandle,
+  cursorForHandle,
   findTopmostHit,
+  handleAtPoint,
+  handlesForBounds,
   hitTest,
-  resizeShape,
+  isBenderHandle,
+  resizeAnnotation,
   shapeContains,
   translateAnnotation,
 } from "./geometry";
 import { drawAnnotation, redrawAll } from "./render";
-import { Toolbar } from "./toolbar";
+import { CapannShell, SHELL_BUTTON } from "./shell";
+import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
@@ -67,6 +73,16 @@ const TOOL_CYCLE_ORDER: ToolId[] = [
 
 const LASER_TRAIL_MS = 450;
 
+/** Screen-mask modes and presentation. */
+const MASK_LABELS = ["Screen", "Blackout", "Whiteout"];
+const MASK_COLORS = ["#0A0A0C", "#0A0A0C", "#FFFFFF"];
+const MASK_OPACITIES = [0, 0.94, 0.94];
+const MASK_SWATCHES = ["transparent", "#0A0A0C", "#FFFFFF"];
+
+const UNDO_ICON = "M9 7L5 11l4 4M5 11h8a5 5 0 010 10h-3";
+const REDO_ICON = "M15 7l4 4-4 4M19 11h-8a5 5 0 000 10h3";
+const DUPLICATE_ICON = "M9 9h10v10H9zM5 15V5h10";
+
 /** Cap on retained undo states, so long sessions don't grow memory unbounded. */
 const HISTORY_LIMIT = 50;
 
@@ -87,10 +103,18 @@ function eraserCursor(strokeWidth: number): string {
 export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
-  const [uiView, setUiView] = useState<"closed" | "chooser" | "annotate" | "record">("closed");
+  const [uiView, setUiView] = useState<
+    "closed" | "chooser" | "annotate" | "record"
+  >("closed");
   const [captureHidden, setCaptureHidden] = useState(true);
-  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({ state: "idle" });
-  const [recordOptions, setRecordOptions] = useState<RecordOptions>({ camera: true, microphone: true, tabAudio: true });
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
+    state: "idle",
+  });
+  const [recordOptions, setRecordOptions] = useState<RecordOptions>({
+    camera: true,
+    microphone: true,
+    tabAudio: true,
+  });
   const [drawModeEnabled, setDrawModeEnabled] = useState(false);
   const [tool, setTool] = useState<ToolId>("pencil");
   const [color, setColor] = useState("#A78BFA");
@@ -103,6 +127,13 @@ export function OverlayApp() {
   const [future, setFuture] = useState<AnnotationObject[][]>([]);
   const [statusText, setStatusText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Session controls live at the shell level so they survive view switches
+  // and are independent of any single view. Their close buttons only remove
+  // the feature, never Capann itself.
+  const [timerOn, setTimerOn] = useState(false);
+  const [maskOn, setMaskOn] = useState(false);
+  const [maskMode, setMaskMode] = useState(0); // 0 = screen, 1 = blackout, 2 = whiteout
+  const [seconds, setSeconds] = useState(754);
 
   const currentPointsRef = useRef<Point[] | null>(null);
   const dragStartRef = useRef<Point | null>(null);
@@ -120,7 +151,7 @@ export function OverlayApp() {
   const editingInputRef = useRef<HTMLTextAreaElement | null>(null);
   const editingPointRef = useRef<Point | null>(null);
   const selectionDragRef = useRef<{
-    kind: "move" | "resize";
+    kind: "move" | "resize" | "bend";
     object: AnnotationObject;
     start: Point;
     handle: number;
@@ -130,6 +161,7 @@ export function OverlayApp() {
 
   const objectsCanvasRef = useRef<HTMLCanvasElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
+  const timerRef = useRef<number | undefined>(undefined);
 
   const storageKey = useCallback(
     () => `${STORAGE_KEY_PREFIX}${tabId}`,
@@ -328,10 +360,11 @@ export function OverlayApp() {
     const text = input.value.trim();
     input.remove();
     if (!text) return;
+    const id = makeId();
     commit([
       ...objects,
       {
-        id: makeId(),
+        id,
         type: "text",
         color,
         strokeWidth,
@@ -341,6 +374,7 @@ export function OverlayApp() {
         fontSize: Math.max(14, strokeWidth * 4),
       },
     ]);
+    setSelectedId(id);
   }, [color, strokeWidth, makeId, commit, objects]);
 
   const beginTextInput = useCallback(
@@ -378,17 +412,16 @@ export function OverlayApp() {
 
   const getSelectedHandle = useCallback(
     (point: Point, ann: AnnotationObject) => {
-      if (ann.type !== "rectangle" && ann.type !== "ellipse") return -1;
-      const b = annotationBounds(ann);
-      const corners = [
-        { x: b.left, y: b.top },
-        { x: b.right, y: b.top },
-        { x: b.left, y: b.bottom },
-        { x: b.right, y: b.bottom },
-      ];
-      return corners.findIndex(
-        (corner) => Math.hypot(point.x - corner.x, point.y - corner.y) <= 10,
-      );
+      // Freeform transformer: 8 handles for every resizable type
+      // (rectangle, ellipse, arrow, text). Strokes move but don't resize.
+      if (
+        ann.type !== "rectangle" &&
+        ann.type !== "ellipse" &&
+        ann.type !== "arrow" &&
+        ann.type !== "text"
+      )
+        return -1;
+      return handleAtPoint(point, ann);
     },
     [],
   );
@@ -403,16 +436,28 @@ export function OverlayApp() {
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
       ctx.setLineDash([]);
-      if (ann.type === "rectangle" || ann.type === "ellipse") {
-        for (const corner of [
-          { x: b.left, y: b.top },
-          { x: b.right, y: b.top },
-          { x: b.left, y: b.bottom },
-          { x: b.right, y: b.bottom },
-        ]) {
+      if (
+        ann.type === "rectangle" ||
+        ann.type === "ellipse" ||
+        ann.type === "arrow" ||
+        ann.type === "text"
+      ) {
+        for (const corner of handlesForBounds(b)) {
           ctx.beginPath();
           ctx.arc(corner.x, corner.y, 5, 0, Math.PI * 2);
           ctx.fill();
+          ctx.stroke();
+        }
+      }
+      // Bender midpoint handle: drag to adjust the curve (Preview-style).
+      if (ann.type === "arrow" && ann.headStyle === "bender") {
+        const mid = benderHandle(ann);
+        if (mid) {
+          ctx.beginPath();
+          ctx.arc(mid.x, mid.y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "#86EFAC";
+          ctx.fill();
+          ctx.strokeStyle = "#0A2E1B";
           ctx.stroke();
         }
       }
@@ -464,6 +509,22 @@ export function OverlayApp() {
 
       if (tool === "select") {
         const selected = objects.find((object) => object.id === selectedId);
+        // Bender midpoint gets priority over the box handles: dragging it
+        // reshapes the curve instead of resizing the bounding box.
+        if (
+          selected?.type === "arrow" &&
+          selected.headStyle === "bender" &&
+          isBenderHandle(point, selected)
+        ) {
+          selectionDragRef.current = {
+            kind: "bend",
+            object: selected,
+            start: point,
+            handle: -1,
+            baseline: objects,
+          };
+          return;
+        }
         const handle = selected ? getSelectedHandle(point, selected) : -1;
         if (selected && handle >= 0) {
           selectionDragRef.current = {
@@ -530,16 +591,72 @@ export function OverlayApp() {
       if (tool === "select" && selectionDrag) {
         const dx = point.x - selectionDrag.start.x;
         const dy = point.y - selectionDrag.start.y;
+        const liveCanvas = liveCanvasRef.current!;
+        if (
+          selectionDrag.kind === "bend" &&
+          selectionDrag.object.type === "arrow"
+        ) {
+          // New bend = signed distance of the cursor from the chord
+          // midpoint along the chord normal, clamped to stay sane.
+          const src = selectionDrag.object;
+          const mx = (src.start.x + src.end.x) / 2;
+          const my = (src.start.y + src.end.y) / 2;
+          const dxc = src.end.x - src.start.x;
+          const dyc = src.end.y - src.start.y;
+          const len = Math.hypot(dxc, dyc) || 1;
+          const bend = Math.max(
+            -300,
+            Math.min(
+              300,
+              ((point.x - mx) * -dyc + (point.y - my) * dxc) / len,
+            ),
+          );
+          const preview = { ...src, bend };
+          clearLive();
+          drawAnnotation(liveCanvas.getContext("2d")!, preview);
+          drawSelection(liveCanvas.getContext("2d")!, preview);
+          liveCanvas.style.cursor = "grabbing";
+          return;
+        }
         const preview =
-          selectionDrag.kind === "resize" &&
-          (selectionDrag.object.type === "rectangle" ||
-            selectionDrag.object.type === "ellipse")
-            ? resizeShape(selectionDrag.object, selectionDrag.handle, point)
+          selectionDrag.kind === "resize"
+            ? resizeAnnotation(selectionDrag.object, selectionDrag.handle, point)
             : translateAnnotation(selectionDrag.object, dx, dy);
         clearLive();
-        drawAnnotation(liveCanvasRef.current!.getContext("2d")!, preview);
-        drawSelection(liveCanvasRef.current!.getContext("2d")!, preview);
+        drawAnnotation(liveCanvas.getContext("2d")!, preview);
+        drawSelection(liveCanvas.getContext("2d")!, preview);
+        // Active-drag cursor: grabbing for moves, edge cursor for resizes.
+        liveCanvas.style.cursor =
+          selectionDrag.kind === "resize"
+            ? cursorForHandle(selectionDrag.handle)
+            : "grabbing";
         return;
+      }
+
+      // Hover cursor for the select tool (no buttons down): handles show
+      // their resize direction, Bender midpoint shows move, hovering a
+      // shape shows it can be dragged, empty canvas shows default.
+      if (tool === "select" && !selectionDrag) {
+        const liveCanvas = liveCanvasRef.current;
+        if (liveCanvas) {
+          const selected = objects.find((o) => o.id === selectedId);
+          let cursor = "default";
+          if (
+            selected?.type === "arrow" &&
+            selected.headStyle === "bender" &&
+            isBenderHandle(point, selected)
+          ) {
+            cursor = "move";
+          } else if (selected) {
+            const h = getSelectedHandle(point, selected);
+            if (h >= 0) cursor = cursorForHandle(h);
+            else if (findSelectable(point, objects)) cursor = "move";
+          } else if (findSelectable(point, objects)) {
+            cursor = "move";
+          }
+          if (liveCanvas.style.cursor !== cursor)
+            liveCanvas.style.cursor = cursor;
+        }
       }
 
       const liveCanvas = liveCanvasRef.current;
@@ -565,6 +682,9 @@ export function OverlayApp() {
 
       if (dragStartRef.current && tool === "arrow") {
         clearLive();
+        // Bender previews with its default curve so users see the bend
+        // before release; straight heads preview as straight lines.
+        const bend = headStyle === "bender" ? 48 : 0;
         drawAnnotation(ctx, {
           id: "preview",
           type: "arrow",
@@ -574,6 +694,7 @@ export function OverlayApp() {
           start: dragStartRef.current,
           end: point,
           headStyle,
+          ...(bend !== 0 ? { bend } : {}),
         });
         return;
       }
@@ -605,6 +726,10 @@ export function OverlayApp() {
       clearLive,
       eraseAt,
       drawSelection,
+      getSelectedHandle,
+      findSelectable,
+      objects,
+      selectedId,
     ],
   );
 
@@ -633,22 +758,51 @@ export function OverlayApp() {
         const point = { x: e.clientX, y: e.clientY };
         const dx = point.x - selectionDrag.start.x;
         const dy = point.y - selectionDrag.start.y;
-        const updated =
-          selectionDrag.kind === "resize" &&
-          (selectionDrag.object.type === "rectangle" ||
-            selectionDrag.object.type === "ellipse")
-            ? resizeShape(selectionDrag.object, selectionDrag.handle, point)
-            : translateAnnotation(selectionDrag.object, dx, dy);
+        let updated: AnnotationObject;
+        if (
+          selectionDrag.kind === "bend" &&
+          selectionDrag.object.type === "arrow"
+        ) {
+          const src = selectionDrag.object;
+          const mx = (src.start.x + src.end.x) / 2;
+          const my = (src.start.y + src.end.y) / 2;
+          const dxc = src.end.x - src.start.x;
+          const dyc = src.end.y - src.start.y;
+          const len = Math.hypot(dxc, dyc) || 1;
+          const bend = Math.max(
+            -300,
+            Math.min(
+              300,
+              ((point.x - mx) * -dyc + (point.y - my) * dxc) / len,
+            ),
+          );
+          updated = { ...src, bend };
+        } else if (selectionDrag.kind === "resize") {
+          updated = resizeAnnotation(
+            selectionDrag.object,
+            selectionDrag.handle,
+            point,
+          );
+        } else {
+          updated = translateAnnotation(selectionDrag.object, dx, dy);
+        }
         const next = selectionDrag.baseline.map((object) =>
           object.id === updated.id ? updated : object,
         );
-        if (dx !== 0 || dy !== 0 || selectionDrag.kind === "resize")
+        if (
+          dx !== 0 ||
+          dy !== 0 ||
+          selectionDrag.kind === "resize" ||
+          selectionDrag.kind === "bend"
+        )
           commit(next);
         clearLive();
         if (drawModeEnabled) {
           const ctx = liveCanvasRef.current?.getContext("2d");
           if (ctx) drawSelection(ctx, updated);
         }
+        // Reset cursor after the drag so a stale grabbing hand doesn't stick.
+        if (liveCanvasRef.current) liveCanvasRef.current.style.cursor = "move";
         return;
       }
 
@@ -662,10 +816,11 @@ export function OverlayApp() {
 
       if (points && (tool === "pencil" || tool === "highlighter")) {
         if (points.length > 1) {
+          const id = makeId();
           commit([
             ...objects,
             {
-              id: makeId(),
+              id,
               type: tool,
               color,
               strokeWidth,
@@ -673,12 +828,15 @@ export function OverlayApp() {
               points,
             },
           ]);
+          // Select the new mark so Duplicate appears immediately.
+          setSelectedId(id);
         }
       } else if (dragStart && tool === "arrow") {
+        const id = makeId();
         commit([
           ...objects,
           {
-            id: makeId(),
+            id,
             type: "arrow",
             color,
             strokeWidth,
@@ -686,13 +844,16 @@ export function OverlayApp() {
             start: dragStart,
             end: point,
             headStyle,
+            ...(headStyle === "bender" ? { bend: 48 } : {}),
           },
         ]);
+        setSelectedId(id);
       } else if (dragStart && (tool === "rectangle" || tool === "ellipse")) {
+        const id = makeId();
         commit([
           ...objects,
           {
-            id: makeId(),
+            id,
             type: tool,
             color,
             strokeWidth,
@@ -702,6 +863,7 @@ export function OverlayApp() {
             filled,
           },
         ]);
+        setSelectedId(id);
       } else {
         return;
       }
@@ -731,7 +893,9 @@ export function OverlayApp() {
       const selected = objects.find((object) => object.id === selectedId);
       if (
         selected &&
-        (selected.type === "rectangle" || selected.type === "ellipse")
+        (selected.type === "rectangle" ||
+          selected.type === "ellipse" ||
+          selected.type === "arrow")
       ) {
         setObjects((prev) =>
           prev.map((object) =>
@@ -761,6 +925,7 @@ export function OverlayApp() {
   const handleClear = useCallback(() => {
     if (objects.length === 0) return;
     commit([]);
+    setSelectedId(null);
     setStatusText("Cleared");
   }, [commit, objects]);
 
@@ -786,6 +951,60 @@ export function OverlayApp() {
     setPast((p) => [...p, objects].slice(-HISTORY_LIMIT));
     setObjects(next);
   }, [future, objects]);
+
+  /**
+   * Duplicate the selected annotation with a small offset, so users can
+   * stamp out copies without redrawing. Commits to history (undoable) and
+   * selects the copy. No-op when nothing is selected.
+   */
+  const duplicateSelected = useCallback(() => {
+    const selected = objects.find((object) => object.id === selectedId);
+    if (!selected) return;
+    const id = makeId();
+    const copy = translateAnnotation(
+      { ...selected, id, createdAt: Date.now() },
+      16,
+      16,
+    ) as AnnotationObject;
+    // translateAnnotation preserves the fresh id (it only shifts coords).
+    commit([...objects, { ...copy, id }]);
+    setSelectedId(id);
+    setStatusText("Duplicated");
+  }, [objects, selectedId, makeId, commit]);
+
+  const startTimer = useCallback((minutes: number) => {
+    setSeconds(minutes * 60);
+    setTimerOn(true);
+  }, []);
+
+  const dropTimer = useCallback(() => {
+    setTimerOn(false);
+  }, []);
+
+  const addMask = useCallback(() => {
+    setMaskOn(true);
+    setMaskMode(0);
+  }, []);
+
+  const cycleMask = useCallback(() => {
+    setMaskMode((m) => (m + 1) % 3);
+  }, []);
+
+  const closeMask = useCallback(() => {
+    setMaskOn(false);
+  }, []);
+
+  const formatTime = useCallback((secs: number) => {
+    const mm = String(Math.floor(secs / 60)).padStart(2, "0");
+    const ss = String(secs % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+  }, []);
+
+  const goBackToChooser = useCallback(() => {
+    // Back never clears annotations or resets tool settings.
+    commitTextInput();
+    setUiView("chooser");
+  }, [commitTextInput]);
 
   const savePng = useCallback(async () => {
     setStatusText("Capturing...");
@@ -841,7 +1060,9 @@ export function OverlayApp() {
   const selectedShape = objects.find((object) => object.id === selectedId);
   const displayedWidth =
     selectedShape &&
-    (selectedShape.type === "rectangle" || selectedShape.type === "ellipse")
+    (selectedShape.type === "rectangle" ||
+      selectedShape.type === "ellipse" ||
+      selectedShape.type === "arrow")
       ? selectedShape.strokeWidth
       : strokeWidth;
 
@@ -868,19 +1089,31 @@ export function OverlayApp() {
     setUiView("record");
     setRecordingStatus({ state: "starting" });
     setCaptureHidden(true);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = (await chrome.runtime.sendMessage({
         kind: "record-start",
         ...recordOptions,
-      } satisfies ContentToBackgroundMessage) as { ok?: boolean; error?: string };
+      } satisfies ContentToBackgroundMessage)) as {
+        ok?: boolean;
+        error?: string;
+      };
       if (!response?.ok) {
-        const status: RecordingStatus = { state: "error", error: response?.error ?? "Could not start recording." };
+        const status: RecordingStatus = {
+          state: "error",
+          error: response?.error ?? "Could not start recording.",
+        };
         setRecordingStatus(status);
         setCaptureHidden(false);
       }
     } catch (error) {
-      setRecordingStatus({ state: "error", error: error instanceof Error ? error.message : "Could not start recording." });
+      setRecordingStatus({
+        state: "error",
+        error:
+          error instanceof Error ? error.message : "Could not start recording.",
+      });
       setCaptureHidden(false);
     }
   }, [commitTextInput, handleDrawModeToggle, recordOptions]);
@@ -894,7 +1127,10 @@ export function OverlayApp() {
         } satisfies ContentToBackgroundMessage)) as GetTabIdResponse;
         setTabId(response.tabId);
         setRecordingStatus(response.recordingStatus);
-        const isRecording = response.recordingStatus.state === "recording" || response.recordingStatus.state === "paused" || response.recordingStatus.state === "starting";
+        const isRecording =
+          response.recordingStatus.state === "recording" ||
+          response.recordingStatus.state === "paused" ||
+          response.recordingStatus.state === "starting";
         setCaptureHidden(isRecording);
         if (isRecording) setUiView("record");
       } catch {
@@ -906,7 +1142,7 @@ export function OverlayApp() {
   }, []);
 
   // Keep the entire shadow-root host out of tabCapture frames during recording,
-  // including canvases, toolbar, and any active text input.
+  // including canvases, shell, and any active text input.
   useEffect(() => {
     if (shadowRoot?.host instanceof HTMLElement) {
       shadowRoot.host.style.visibility = captureHidden ? "hidden" : "visible";
@@ -934,6 +1170,22 @@ export function OverlayApp() {
   useEffect(() => {
     updatePointerMode();
   }, [updatePointerMode]);
+
+  // Countdown timer ticks at the shell level, independent of the active view.
+  useEffect(() => {
+    if (timerOn) {
+      timerRef.current = window.setInterval(() => {
+        setSeconds((s) => (s > 0 ? s - 1 : 0));
+      }, 1000);
+    } else if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [timerOn]);
 
   // Clear status text after timeout
   useEffect(() => {
@@ -979,21 +1231,45 @@ export function OverlayApp() {
     };
   }, [drawModeEnabled, tool]);
 
-  // Handle Escape key
+  // Handle Escape (exit draw mode, keep marks) and Ctrl/Cmd+D (duplicate).
+  // Esc never clears annotations or closes the panel — it only returns
+  // pointer events to the page. Ctrl+D is handled in-page (not a manifest
+  // command) because Chrome reserves it for bookmarks; preventDefault stops
+  // the bookmark tab from opening. Meta+D covers macOS.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && drawModeEnabled && !captureHidden) setDrawModeEnabled(false);
+      if (e.key === "Escape" && drawModeEnabled && !captureHidden)
+        setDrawModeEnabled(false);
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === "d" || e.key === "D") &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        duplicateSelected();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [drawModeEnabled, captureHidden]);
+  }, [drawModeEnabled, captureHidden, duplicateSelected]);
 
   // Handle extension action, keyboard, and recorder status messages.
+  // Alt+Shift+S (toggle-capann-ui) only toggles draw mode while the panel
+  // is open; when closed it opens the chooser. It never closes the panel.
   useEffect(() => {
     const handleMessage = (message: BackgroundToContentMessage) => {
       switch (message.kind) {
         case "toggle-capann-ui":
-          setUiView((view) => view === "closed" ? "chooser" : "closed");
+          if (uiView === "closed") {
+            setUiView("chooser");
+          } else if (uiView === "chooser") {
+            setUiView("annotate");
+            setDrawModeEnabled(true);
+          } else if (uiView === "annotate") {
+            handleDrawModeToggle(!drawModeEnabled);
+          }
+          // Record view owns its shortcuts (pause/resume/discard); ignore.
           break;
         case "clear-annotations":
           handleClear();
@@ -1003,11 +1279,22 @@ export function OverlayApp() {
           break;
         case "recording-status": {
           setRecordingStatus(message.status);
-          const active = message.status.state === "recording" || message.status.state === "paused" || message.status.state === "starting";
+          const active =
+            message.status.state === "recording" ||
+            message.status.state === "paused" ||
+            message.status.state === "starting";
           setCaptureHidden(active);
           if (!active) {
             setUiView("record");
-            setStatusText(message.status.state === "saved" ? "Recording saved" : message.status.state === "discarded" ? "Recording discarded" : message.status.state === "error" ? message.status.error : "");
+            setStatusText(
+              message.status.state === "saved"
+                ? "Recording saved"
+                : message.status.state === "discarded"
+                  ? "Recording discarded"
+                  : message.status.state === "error"
+                    ? message.status.error
+                    : "",
+            );
           }
           break;
         }
@@ -1016,26 +1303,148 @@ export function OverlayApp() {
 
     chrome.runtime.onMessage.addListener(handleMessage);
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
-  }, [handleClear, cycleTool]);
+  }, [handleClear, cycleTool, uiView, drawModeEnabled, handleDrawModeToggle]);
 
-  const hiddenByCapture = captureHidden ? { visibility: "hidden" as const } : undefined;
+  const hiddenByCapture = captureHidden
+    ? { visibility: "hidden" as const }
+    : undefined;
   const closeUi = () => {
     setUiView("closed");
     handleDrawModeToggle(false);
   };
-  const surface: React.CSSProperties = {
-    position: "fixed", top: "48px", right: "56px", zIndex: 2147483647,
-    boxSizing: "border-box", width: "min(280px, calc(100vw - 32px))", padding: "16px",
-    borderRadius: "24px", background: "rgba(28,28,32,0.88)", color: "#F5F5F7",
-    border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(20px)",
-    WebkitBackdropFilter: "blur(20px)", font: "400 13px/1.45 Manrope, Inter, system-ui, sans-serif",
-    boxShadow: "0 18px 52px rgba(0,0,0,.28)",
+  const recordingIsActive =
+    recordingStatus.state === "recording" ||
+    recordingStatus.state === "paused" ||
+    recordingStatus.state === "starting";
+  const warn = seconds < 120;
+
+  // Render fallback notices for unavailable inputs during recording.
+  const renderUnavailableNotices = () => {
+    const status = recordingStatus as { unavailable?: string[] };
+    if (!status.unavailable || status.unavailable.length === 0) return null;
+    return status.unavailable.map((item: string) => {
+      let message = "";
+      if (item === "camera")
+        message =
+          "Camera unavailable — your recording will continue without the camera bubble.";
+      else if (item === "microphone")
+        message =
+          "Microphone unavailable — your recording will continue without microphone audio.";
+      else if (item === "tab audio")
+        message =
+          "Tab audio unavailable — your recording will continue without audio from this tab.";
+      else
+        message = `${item} unavailable — your recording will continue without it.`;
+      return (
+        <p
+          key={item}
+          role="status"
+          style={{ color: "#F5E8A6", fontSize: 11, margin: "8px 0 0" }}
+        >
+          {message}
+        </p>
+      );
+    });
   };
-  const surfaceButton: React.CSSProperties = {
-    border: "1px solid rgba(255,255,255,.1)", borderRadius: "14px", padding: "12px 14px",
-    background: "#26262B", color: "#F5F5F7", cursor: "pointer", font: "500 13px/1.2 Manrope, Inter, system-ui, sans-serif",
-  };
-  const recordingIsActive = recordingStatus.state === "recording" || recordingStatus.state === "paused" || recordingStatus.state === "starting";
+
+  // Annotate undo/redo/duplicate live in the shared shell header.
+  // Duplicate only shows when an annotation is selected (which includes
+  // right after drawing, since new marks auto-select).
+  const annotateActions = (
+    <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+      <button
+        onClick={() => handleUndo()}
+        title="Undo"
+        style={{
+          width: "26px",
+          height: "26px",
+          borderRadius: "12px",
+          background: "transparent",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: past.length > 0 ? "pointer" : "default",
+        }}
+        onMouseEnter={(e) =>
+          past.length > 0 && (e.currentTarget.style.background = "#26262B")
+        }
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path
+            d={UNDO_ICON}
+            stroke={past.length > 0 ? "#F5F5F7" : "rgba(139,139,147,0.45)"}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      <button
+        onClick={() => handleRedo()}
+        title="Redo"
+        style={{
+          width: "26px",
+          height: "26px",
+          borderRadius: "12px",
+          background: "transparent",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: future.length > 0 ? "pointer" : "default",
+        }}
+        onMouseEnter={(e) =>
+          future.length > 0 && (e.currentTarget.style.background = "#26262B")
+        }
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path
+            d={REDO_ICON}
+            stroke={future.length > 0 ? "#F5F5F7" : "rgba(139,139,147,0.45)"}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {selectedId && (
+        <button
+          onClick={() => duplicateSelected()}
+          title="Duplicate selected (Ctrl+D)"
+          style={{
+            width: "26px",
+            height: "26px",
+            borderRadius: "12px",
+            background: "transparent",
+            border: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.background = "#26262B")
+          }
+          onMouseLeave={(e) =>
+            (e.currentTarget.style.background = "transparent")
+          }
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path
+              d={DUPLICATE_ICON}
+              stroke="#F5F5F7"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <>
@@ -1067,72 +1476,380 @@ export function OverlayApp() {
         }
       `}</style>
       <div style={hiddenByCapture}>
-        {uiView === "chooser" && <section style={surface} aria-label="Capann workspace chooser">
-          <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <img src={chrome.runtime.getURL("icons/capann-logo.png")} alt="" width="32" height="32" style={{ borderRadius: 9 }} />
-            <div style={{ flex: 1 }}><strong style={{ fontSize: 15 }}>Capann</strong><div style={{ color: "#8B8B93", fontSize: 11 }}>Choose a workspace</div></div>
-            <button onClick={closeUi} aria-label="Close Capann" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>×</button>
-          </header>
-          <div style={{ display: "grid", gap: 8 }}>
-            <button onClick={() => { setStatusText(""); setRecordingStatus({ state: "idle" }); setUiView("record"); }} style={{ ...surfaceButton, textAlign: "left" }}><b>●　Record</b><span style={{ display: "block", margin: "5px 0 0 24px", color: "#8B8B93", fontSize: 11 }}>Capture this tab with camera and audio</span></button>
-            <button onClick={() => { setUiView("annotate"); handleDrawModeToggle(false); }} style={{ ...surfaceButton, textAlign: "left" }}><b>✎　Annotate</b><span style={{ display: "block", margin: "5px 0 0 24px", color: "#8B8B93", fontSize: 11 }}>Draw and mark up this tab</span></button>
-          </div>
-        </section>}
+        {uiView === "chooser" && (
+          <CapannShell
+            title="Capann"
+            subtitle="Choose a workspace"
+            showBack={false}
+            onBack={goBackToChooser}
+            onClose={closeUi}
+          >
+            <div style={{ display: "grid", gap: 8 }}>
+              <button
+                onClick={() => {
+                  setStatusText("");
+                  setRecordingStatus({ state: "idle" });
+                  setUiView("record");
+                }}
+                style={{ ...SHELL_BUTTON, textAlign: "left" }}
+              >
+                <b>●　Record</b>
+                <span
+                  style={{
+                    display: "block",
+                    margin: "5px 0 0 24px",
+                    color: "#8B8B93",
+                    fontSize: 11,
+                  }}
+                >
+                  Capture this tab with camera and audio
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  setUiView("annotate");
+                  handleDrawModeToggle(false);
+                }}
+                style={{ ...SHELL_BUTTON, textAlign: "left" }}
+              >
+                <b>✎　Annotate</b>
+                <span
+                  style={{
+                    display: "block",
+                    margin: "5px 0 0 24px",
+                    color: "#8B8B93",
+                    fontSize: 11,
+                  }}
+                >
+                  Draw and mark up this tab
+                </span>
+              </button>
+            </div>
+          </CapannShell>
+        )}
 
-        {uiView === "annotate" && <>
-          <Toolbar
-            defaultExpanded
-            onToolChange={handleToolChange}
-            onColorChange={setColor}
-            onWidthChange={changeWidth}
-            onWidthEditStart={beginWidthEdit}
-            onWidthEditComplete={finishWidthEdit}
-            onHeadStyleChange={setHeadStyle}
-            onFilledChange={setFilled}
-            onClear={handleClear}
-            onSavePng={() => void savePng()}
-            onDrawModeToggle={handleDrawModeToggle}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-            canUndo={past.length > 0}
-            canRedo={future.length > 0}
-            drawModeEnabled={drawModeEnabled}
-            currentTool={tool}
-            currentColor={color}
-            currentWidth={displayedWidth}
-            currentHeadStyle={headStyle}
-            currentFilled={filled}
-            statusText={statusText}
+        {uiView === "annotate" && (
+          <CapannShell
+            title="Annotate"
+            subtitle={
+              drawModeEnabled ? undefined : "Pick a tool to start drawing"
+            }
+            showBack
+            onBack={goBackToChooser}
+            onClose={closeUi}
+            actions={annotateActions}
+          >
+            <AnnotateControls
+              onToolChange={handleToolChange}
+              onColorChange={setColor}
+              onWidthChange={changeWidth}
+              onWidthEditStart={beginWidthEdit}
+              onWidthEditComplete={finishWidthEdit}
+              onHeadStyleChange={setHeadStyle}
+              onFilledChange={setFilled}
+              onClear={handleClear}
+              onSavePng={() => void savePng()}
+              onDrawModeToggle={handleDrawModeToggle}
+              onStartTimer={startTimer}
+              onAddMask={addMask}
+              timerOn={timerOn}
+              maskOn={maskOn}
+              drawModeEnabled={drawModeEnabled}
+              currentTool={tool}
+              currentColor={color}
+              currentWidth={displayedWidth}
+              currentHeadStyle={headStyle}
+              currentFilled={filled}
+              statusText={statusText}
+            />
+          </CapannShell>
+        )}
+
+        {uiView === "record" && (
+          <CapannShell
+            title="Record this tab"
+            showBack={!recordingIsActive}
+            onBack={goBackToChooser}
+            onClose={closeUi}
+          >
+            <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
+              Capann's UI and annotations are hidden from the saved video.
+            </p>
+            <div style={{ display: "grid", gap: 10 }}>
+              {(
+                [
+                  ["Camera bubble", "camera"],
+                  ["Microphone", "microphone"],
+                  ["Tab audio", "tabAudio"],
+                ] as const
+              ).map(([label, key]) => (
+                <label
+                  key={key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    color: recordingIsActive ? "#66666F" : "#F5F5F7",
+                  }}
+                >
+                  {label}
+                  <input
+                    type="checkbox"
+                    checked={recordOptions[key]}
+                    disabled={recordingIsActive}
+                    onChange={(event) =>
+                      setRecordOptions((options) => ({
+                        ...options,
+                        [key]: event.target.checked,
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            {!recordingIsActive && (
+              <button
+                onClick={() => void startRecording()}
+                style={{
+                  ...SHELL_BUTTON,
+                  width: "100%",
+                  marginTop: 14,
+                  background: "#A78BFA",
+                  border: 0,
+                  color: "#17131F",
+                  fontWeight: 700,
+                }}
+              >
+                Start recording
+              </button>
+            )}
+            {recordingStatus.state === "starting" && (
+              <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>
+                Preparing capture…
+              </p>
+            )}
+            {recordingStatus.state === "recording" && (
+              <>
+                <p
+                  role="status"
+                  style={{ color: "#86EFAC", margin: "14px 0 0" }}
+                >
+                  Recording in progress. Use the Capann icon to stop and save,
+                  Alt+Shift+T to pause/resume, or Alt+Shift+C to discard.
+                </p>
+                {renderUnavailableNotices()}
+              </>
+            )}
+            {recordingStatus.state === "paused" && (
+              <>
+                <p
+                  role="status"
+                  style={{ color: "#F5E8A6", margin: "14px 0 0" }}
+                >
+                  Recording paused. Use Alt+Shift+T to resume or the Capann icon
+                  to save.
+                </p>
+                {renderUnavailableNotices()}
+              </>
+            )}
+            {recordingStatus.state === "error" && (
+              <p role="alert" style={{ color: "#FCA5A5", margin: "14px 0 0" }}>
+                {recordingStatus.error}
+              </p>
+            )}
+            {recordingStatus.state === "saved" && (
+              <p role="status" style={{ color: "#86EFAC", margin: "14px 0 0" }}>
+                Saved {recordingStatus.filename}
+              </p>
+            )}
+            {recordingStatus.state === "discarded" && (
+              <p role="status" style={{ color: "#8B8B93", margin: "14px 0 0" }}>
+                Recording discarded.
+              </p>
+            )}
+          </CapannShell>
+        )}
+
+        {/* Timer chip (bottom-left) — independent of the active view */}
+        {uiView !== "closed" && timerOn && (
+          <div
+            style={{
+              position: "fixed",
+              left: "56px",
+              bottom: "44px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              height: "34px",
+              padding: "0 6px 0 12px",
+              borderRadius: "999px",
+              background: "rgba(28,28,32,0.72)",
+              backdropFilter: "blur(20px)",
+              WebkitBackdropFilter: "blur(20px)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              zIndex: 2147483647,
+            }}
+          >
+            <i
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "999px",
+                animation: "pulseDot 1.6s ease-in-out infinite",
+                background: warn ? "#F5E8A6" : "#86EFAC",
+              }}
+            />
+            <span
+              style={{
+                font: "500 13px/1 Manrope,system-ui,sans-serif",
+                fontVariantNumeric: "tabular-nums",
+                color: warn ? "#F5E8A6" : "#F5F5F7",
+              }}
+            >
+              {formatTime(seconds)}
+            </span>
+            <span
+              style={{
+                font: "400 11px/1 Manrope,system-ui,sans-serif",
+                color: "#8B8B93",
+              }}
+            >
+              left
+            </span>
+            <button
+              onClick={dropTimer}
+              title="Remove timer"
+              style={{
+                width: "22px",
+                height: "22px",
+                borderRadius: "999px",
+                background: "transparent",
+                border: "none",
+                color: "#8B8B93",
+                font: "400 14px/1 Manrope,system-ui,sans-serif",
+                cursor: "pointer",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#26262B";
+                e.currentTarget.style.color = "#F5F5F7";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = "#8B8B93";
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Mask chip (bottom-left, next to timer) — independent of the active view */}
+        {uiView !== "closed" && maskOn && (
+          <div
+            style={{
+              position: "fixed",
+              left: timerOn ? "220px" : "56px",
+              bottom: "44px",
+              zIndex: 2147483647,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0,
+                height: "34px",
+                padding: 0,
+                borderRadius: "999px",
+                backdropFilter: "blur(20px)",
+                WebkitBackdropFilter: "blur(20px)",
+                background:
+                  maskMode === 0
+                    ? "rgba(28,28,32,0.72)"
+                    : "rgba(28,28,32,0.88)",
+                border:
+                  maskMode === 0
+                    ? "1px solid rgba(255,255,255,0.08)"
+                    : "1px solid rgba(167,139,250,0.55)",
+              }}
+            >
+              <button
+                onClick={cycleMask}
+                title="Cycle screen mask mode"
+                aria-label={`Screen mask: ${MASK_LABELS[maskMode]}. Click to change mode`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  height: "34px",
+                  padding: "0 0 0 14px",
+                  border: "none",
+                  borderRadius: "999px 0 0 999px",
+                  cursor: "pointer",
+                  background: "transparent",
+                }}
+              >
+                <i
+                  style={{
+                    width: "12px",
+                    height: "12px",
+                    borderRadius: "4px",
+                    border: "1px solid rgba(255,255,255,0.28)",
+                    background: MASK_SWATCHES[maskMode],
+                  }}
+                />
+                <span
+                  style={{
+                    font: "500 13px/1 Manrope,system-ui,sans-serif",
+                    color: maskMode === 0 ? "#F5F5F7" : "#A78BFA",
+                  }}
+                >
+                  {MASK_LABELS[maskMode]}
+                </span>
+              </button>
+              <button
+                onClick={closeMask}
+                title="Close screen mask"
+                aria-label="Close screen mask"
+                style={{
+                  height: "34px",
+                  width: "32px",
+                  border: "none",
+                  borderRadius: "0 999px 999px 0",
+                  background: "transparent",
+                  color: "#8B8B93",
+                  font: "400 16px/1 Manrope,system-ui,sans-serif",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "#26262B";
+                  e.currentTarget.style.color = "#F5F5F7";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "#8B8B93";
+                }}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Mask overlay — independent of the active view */}
+        {uiView !== "closed" && maskOn && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              pointerEvents: "none",
+              transition: "opacity 180ms cubic-bezier(0.2,0.8,0.2,1)",
+              background: MASK_COLORS[maskMode],
+              opacity: MASK_OPACITIES[maskMode],
+              zIndex: 2147483645,
+            }}
           />
-          <button onClick={closeUi} title="Close Capann" aria-label="Close Capann" style={{ position: "fixed", top: "52px", right: "278px", zIndex: 2147483647, width: 30, height: 30, border: "1px solid rgba(255,255,255,.1)", borderRadius: 999, background: "rgba(28,28,32,.9)", color: "#8B8B93", cursor: "pointer" }}>×</button>
-        </>}
-
-        {uiView === "record" && <section style={surface} aria-label="Capann recorder">
-          <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-            <img src={chrome.runtime.getURL("icons/capann-logo.png")} alt="" width="30" height="30" style={{ borderRadius: 8 }} />
-            <strong style={{ flex: 1, fontSize: 15 }}>Record this tab</strong>
-            {!recordingIsActive && <button onClick={() => setUiView("chooser")} aria-label="Back to Capann choices" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>‹</button>}
-            {!recordingIsActive && <button onClick={closeUi} aria-label="Close Capann" style={{ ...surfaceButton, padding: "6px 10px", color: "#8B8B93" }}>×</button>}
-          </header>
-          <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>Capann’s UI and annotations are hidden from the saved video.</p>
-          <div style={{ display: "grid", gap: 10 }}>
-            {([
-              ["Camera bubble", "camera"],
-              ["Microphone", "microphone"],
-              ["Tab audio", "tabAudio"],
-            ] as const).map(([label, key]) => <label key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: recordingIsActive ? "#66666F" : "#F5F5F7" }}>
-              {label}<input type="checkbox" checked={recordOptions[key]} disabled={recordingIsActive} onChange={(event) => setRecordOptions((options) => ({ ...options, [key]: event.target.checked }))} />
-            </label>)}
-          </div>
-          {!recordingIsActive && <button onClick={() => void startRecording()} style={{ ...surfaceButton, width: "100%", marginTop: 14, background: "#A78BFA", border: 0, color: "#17131F", fontWeight: 700 }}>Start recording</button>}
-          {recordingStatus.state === "starting" && <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>Preparing capture…</p>}
-          {recordingStatus.state === "recording" && <p role="status" style={{ color: "#86EFAC", margin: "14px 0 0" }}>Recording in progress. Use the Capann icon to stop and save, Alt+Shift+T to pause/resume, or Alt+Shift+C to discard.</p>}
-          {recordingStatus.state === "paused" && <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>Recording paused. Use Alt+Shift+T to resume or the Capann icon to save.</p>}
-          {recordingStatus.state === "error" && <p role="alert" style={{ color: "#FCA5A5", margin: "14px 0 0" }}>{recordingStatus.error}</p>}
-          {recordingStatus.state === "saved" && <p role="status" style={{ color: "#86EFAC", margin: "14px 0 0" }}>Saved {recordingStatus.filename}</p>}
-          {recordingStatus.state === "discarded" && <p role="status" style={{ color: "#8B8B93", margin: "14px 0 0" }}>Recording discarded.</p>}
-          {(recordingStatus.state === "recording" || recordingStatus.state === "paused") && recordingStatus.unavailable.length > 0 && <p style={{ color: "#F5E8A6", fontSize: 11 }}>Unavailable: {recordingStatus.unavailable.join(", ")}</p>}
-        </section>}
+        )}
 
         <div className="canvas-wrapper">
           <canvas ref={objectsCanvasRef} />

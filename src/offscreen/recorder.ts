@@ -1,13 +1,20 @@
-import type { RecordingStatus } from "../shared/types";
+import type {
+  RecordingStatus,
+  BackgroundToRecorderMessage,
+} from "../shared/types";
 
 type StartMessage = {
   kind: "offscreen-start";
   streamId: string;
   tabId: number;
+  requestId: number;
   camera: boolean;
   microphone: boolean;
   tabAudio: boolean;
 };
+
+const OFFSCREEN_TARGET = "offscreen" as const;
+
 let recorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
 let tabStream: MediaStream | null = null;
@@ -27,7 +34,7 @@ let missingInputs: string[] = [];
 
 function emit(status: RecordingStatus): void {
   void chrome.runtime
-    .sendMessage({ kind: "record-status", status })
+    .sendMessage({ kind: "record-status", status, target: OFFSCREEN_TARGET })
     .catch(() => undefined);
 }
 
@@ -105,9 +112,13 @@ async function start(message: StartMessage): Promise<void> {
 
   // Tab video is mandatory. A failure exits before a MediaRecorder exists, so
   // unsupported pages never leave behind an empty download.
-  tabStream = await getTabStream(message);
+  try {
+    tabStream = await getTabStream(message);
+  } catch (error) {
+    throw new Error(toInternalError(error));
+  }
   if (!tabStream.getVideoTracks().length)
-    throw new Error("Chrome returned no video for this tab.");
+    throw new Error("RECORDER_START_FAILED:no-video");
   if (message.camera)
     cameraStream = await optionalMedia(
       { video: { aspectRatio: 16 / 9 }, audio: false },
@@ -125,12 +136,16 @@ async function start(message: StartMessage): Promise<void> {
   video.muted = true;
   video.playsInline = true;
   video.srcObject = new MediaStream([videoTrack]);
-  await video.play();
-  await new Promise<void>((resolve) => {
-    if (video.videoWidth > 0) resolve();
-    else
-      video.addEventListener("loadedmetadata", () => resolve(), { once: true });
-  });
+  try {
+    await video.play();
+    await new Promise<void>((resolve) => {
+      if (video.videoWidth > 0) resolve();
+      else
+        video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+    });
+  } catch (error) {
+    throw new Error(toInternalError(error));
+  }
 
   const width = video.videoWidth || 1280;
   const height = video.videoHeight || 720;
@@ -138,7 +153,7 @@ async function start(message: StartMessage): Promise<void> {
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not create the recording compositor.");
+  if (!ctx) throw new Error("RECORDER_START_FAILED:compositor");
   const cameraVideo = document.createElement("video");
   if (cameraStream) {
     cameraVideo.muted = true;
@@ -200,7 +215,11 @@ async function start(message: StartMessage): Promise<void> {
   ];
   const tabAudioTrack = tabStream.getAudioTracks()[0];
   if (tabAudioTrack || microphoneStream?.getAudioTracks().length) {
-    audioContext = new AudioContext();
+    try {
+      audioContext = new AudioContext();
+    } catch (error) {
+      throw new Error(toInternalError(error));
+    }
     const destination = audioContext.createMediaStreamDestination();
     if (tabAudioTrack) {
       const source = audioContext.createMediaStreamSource(
@@ -217,7 +236,11 @@ async function start(message: StartMessage): Promise<void> {
         .createMediaStreamSource(new MediaStream([micTrack]))
         .connect(destination);
     mixedTracks.push(...destination.stream.getAudioTracks());
-    await audioContext.resume();
+    try {
+      await audioContext.resume();
+    } catch (error) {
+      throw new Error(toInternalError(error));
+    }
   }
   outputStream = new MediaStream(mixedTracks);
   const mimeType = [
@@ -225,10 +248,14 @@ async function start(message: StartMessage): Promise<void> {
     "video/webm;codecs=vp8,opus",
     "video/webm",
   ].find((type) => MediaRecorder.isTypeSupported(type));
-  recorder = new MediaRecorder(
-    outputStream,
-    mimeType ? { mimeType } : undefined,
-  );
+  try {
+    recorder = new MediaRecorder(
+      outputStream,
+      mimeType ? { mimeType } : undefined,
+    );
+  } catch (error) {
+    throw new Error(toInternalError(error));
+  }
   recorder.ondataavailable = (event) => {
     if (event.data.size) chunks.push(event.data);
   };
@@ -238,16 +265,84 @@ async function start(message: StartMessage): Promise<void> {
   recorder.onerror = () => {
     emit({
       state: "error",
-      error: "The browser recording stopped unexpectedly.",
+      error: "RECORDING_STOPPED_UNEXPECTEDLY",
     });
     void cleanup();
   };
   startedAt = Date.now();
   activeStart = performance.now();
   accumulatedMs = 0;
-  recorder.start(1000);
+  try {
+    recorder.start(1000);
+  } catch (error) {
+    throw new Error(toInternalError(error));
+  }
   emit(currentStatus());
   statusTimer = window.setInterval(() => emit(currentStatus()), 1000);
+}
+
+// Internal error codes for the service worker to translate to user-facing messages.
+function toInternalError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  // Errors are converted at the boundary that first understands them. Keep a
+  // known code intact when it crosses another async boundary.
+  if (/^(PERMISSION_DENIED:|RECORDER_START_FAILED:|RECORDING_STOPPED_UNEXPECTEDLY|FILE_SAVE_FAILED)/.test(message)) {
+    return message;
+  }
+
+  // getUserMedia failures for specific inputs
+  if (lower.includes("permission denied") || lower.includes("notallowed")) {
+    if (lower.includes("video") || lower.includes("camera")) {
+      return "PERMISSION_DENIED:camera";
+    }
+    if (lower.includes("audio") || lower.includes("microphone")) {
+      return "PERMISSION_DENIED:microphone";
+    }
+    return "PERMISSION_DENIED:unknown";
+  }
+  if (lower.includes("not found") || lower.includes("notfound") || lower.includes("no.*device")) {
+    if (lower.includes("video") || lower.includes("camera")) {
+      return "PERMISSION_DENIED:camera";
+    }
+    if (lower.includes("audio") || lower.includes("microphone")) {
+      return "PERMISSION_DENIED:microphone";
+    }
+    return "PERMISSION_DENIED:unknown";
+  }
+  // Tab audio capture failure
+  if (lower.includes("tab audio could not be captured") || (lower.includes("audio") && lower.includes("tab"))) {
+    return "PERMISSION_DENIED:tabAudio";
+  }
+  // Compositor/canvas failures
+  if (lower.includes("compositor") || lower.includes("canvas") || lower.includes("context")) {
+    return "RECORDER_START_FAILED:compositor";
+  }
+  // AudioContext failures
+  if (lower.includes("audiocontext") || lower.includes("audio context")) {
+    return "RECORDER_START_FAILED:audio-context";
+  }
+  // MediaRecorder failures
+  if (lower.includes("mediarecorder") || lower.includes("media recorder") || lower.includes("mime") || lower.includes("codec")) {
+    return "RECORDER_START_FAILED:mediarecorder";
+  }
+  // Video playback/stream failures
+  if (lower.includes("video") && (lower.includes("play") || lower.includes("load") || lower.includes("stream"))) {
+    return "RECORDER_START_FAILED:video-stream";
+  }
+  // Generic recorder startup failures
+  if (lower.includes("recording is already active")) {
+    return "RECORDER_START_FAILED:already-active";
+  }
+  if (lower.includes("no video for this tab") || lower.includes("chrome returned no video")) {
+    return "RECORDER_START_FAILED:no-video";
+  }
+  return "RECORDER_START_FAILED:unknown";
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function cleanup(): Promise<void> {
@@ -283,7 +378,7 @@ async function finalize(discard: boolean): Promise<void> {
     emit(
       discard
         ? { state: "discarded" }
-        : { state: "error", error: "The recording contained no video data." },
+        : { state: "error", error: "RECORDER_START_FAILED:no-video-data" },
     );
   } else {
     const filename = `capann-recording-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
@@ -293,65 +388,99 @@ async function finalize(discard: boolean): Promise<void> {
       if (error)
         emit({
           state: "error",
-          error: error.message ?? "Could not save recording.",
+          error: "FILE_SAVE_FAILED",
         });
       else emit({ state: "saved", filename });
       window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      void chrome.runtime.sendMessage({ kind: "offscreen-close" });
+      void chrome.runtime.sendMessage({ kind: "offscreen-close", target: OFFSCREEN_TARGET });
     });
   }
-  if (discard) void chrome.runtime.sendMessage({ kind: "offscreen-close" });
+  if (discard) void chrome.runtime.sendMessage({ kind: "offscreen-close", target: OFFSCREEN_TARGET });
 }
 
-chrome.runtime.onMessage.addListener(
-  (
-    message: { kind?: string } & Partial<StartMessage>,
-    _sender,
-    sendResponse,
-  ) => {
-    if (message.kind === "offscreen-start") {
-      void start(message as StartMessage)
-        .then(() => {
-          sendResponse({ ok: true });
-        })
-        .catch(async (error: unknown) => {
-          await cleanup();
-          const detail =
-            error instanceof Error
-              ? error.message
-              : "Could not start recording.";
-          emit({ state: "error", error: detail });
-          sendResponse({ ok: false, error: detail });
-          void chrome.runtime.sendMessage({ kind: "offscreen-close" });
+function respond(
+  port: chrome.runtime.Port,
+  requestId: number,
+  response: { ok: boolean; error?: string },
+): void {
+  port.postMessage({ ...response, requestId });
+}
+
+function handleRecorderCommand(
+  message: BackgroundToRecorderMessage,
+  port: chrome.runtime.Port,
+): void {
+  if (message.target !== OFFSCREEN_TARGET) return;
+  const { requestId } = message;
+
+  if (message.kind === "offscreen-ready-check") {
+    respond(port, requestId, { ok: true });
+    return;
+  }
+  if (message.kind === "offscreen-start") {
+    void start(message as StartMessage)
+      .then(() => respond(port, requestId, { ok: true }))
+      .catch(async (error: unknown) => {
+        await cleanup();
+        const internalError = toInternalError(error);
+        emit({ state: "error", error: internalError });
+        respond(port, requestId, { ok: false, error: internalError });
+        void chrome.runtime.sendMessage({
+          kind: "offscreen-close",
+          target: OFFSCREEN_TARGET,
         });
-      return true;
-    } else if (
-      message.kind === "offscreen-pause" &&
-      recorder?.state === "recording"
-    ) {
+      });
+    return;
+  }
+  if (message.kind === "offscreen-pause") {
+    if (recorder?.state === "recording") {
       accumulatedMs += performance.now() - activeStart;
       recorder.pause();
       clearInterval(statusTimer);
       emit(currentStatus(true));
-    } else if (
-      message.kind === "offscreen-resume" &&
-      recorder?.state === "paused"
-    ) {
+    }
+    respond(port, requestId, { ok: true });
+    return;
+  }
+  if (message.kind === "offscreen-resume") {
+    if (recorder?.state === "paused") {
       activeStart = performance.now();
       recorder.resume();
       statusTimer = window.setInterval(() => emit(currentStatus()), 1000);
       emit(currentStatus());
-    } else if (message.kind === "offscreen-stop") {
-      if (recorder && recorder.state !== "inactive") {
-        if (recorder.state === "recording")
-          accumulatedMs += performance.now() - activeStart;
-        recorder.stop();
-      }
-    } else if (message.kind === "offscreen-discard") {
-      discardRequested = true;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      else void finalize(true);
     }
-    return false;
-  },
-);
+    respond(port, requestId, { ok: true });
+    return;
+  }
+  if (message.kind === "offscreen-stop") {
+    if (recorder && recorder.state !== "inactive") {
+      if (recorder.state === "recording")
+        accumulatedMs += performance.now() - activeStart;
+      recorder.stop();
+    }
+    respond(port, requestId, { ok: true });
+    return;
+  }
+  if (message.kind === "offscreen-discard") {
+    discardRequested = true;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    else void finalize(true);
+    respond(port, requestId, { ok: true });
+  }
+}
+
+// The port opens from the offscreen document, which wakes the MV3 service
+// worker and proves this script is loaded before it accepts recorder commands.
+// Reconnect if Chrome suspends and restarts the service worker while this
+// document is still active.
+function connectRecorderPort(): void {
+  const recorderPort = chrome.runtime.connect({ name: "capann-recorder" });
+  recorderPort.onMessage.addListener((message: BackgroundToRecorderMessage) => {
+    handleRecorderCommand(message, recorderPort);
+  });
+  recorderPort.onDisconnect.addListener(() => {
+    window.setTimeout(connectRecorderPort, 250);
+  });
+}
+
+connectRecorderPort();

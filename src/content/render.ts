@@ -52,7 +52,7 @@ function drawArrowHead(
   const spread = Math.PI / 7;
 
   ctx.beginPath();
-  if (style === "triangle") {
+  if (style === "triangle" || style === "bender") {
     const left: Point = {
       x: to.x - headLength * Math.cos(angle - spread),
       y: to.y - headLength * Math.sin(angle - spread),
@@ -102,12 +102,48 @@ function drawArrow(ctx: CanvasRenderingContext2D, ann: ArrowAnnotation): void {
   ctx.fillStyle = ann.color;
   ctx.lineWidth = ann.strokeWidth;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(ann.start.x, ann.start.y);
-  ctx.lineTo(ann.end.x, ann.end.y);
-  ctx.stroke();
-  drawArrowHead(ctx, ann.start, ann.end, ann.strokeWidth, ann.headStyle);
+  const bend = ann.bend ?? 0;
+  if (ann.headStyle === "bender" || bend !== 0) {
+    const c = arrowControlPoint(ann.start, ann.end, bend);
+    ctx.beginPath();
+    ctx.moveTo(ann.start.x, ann.start.y);
+    ctx.quadraticCurveTo(c.x, c.y, ann.end.x, ann.end.y);
+    ctx.stroke();
+    // Head follows the end tangent of the curve, not the straight chord.
+    const angle = Math.atan2(ann.end.y - c.y, ann.end.x - c.x);
+    drawArrowHeadAt(ctx, ann.end, angle, ann.strokeWidth, "triangle");
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(ann.start.x, ann.start.y);
+    ctx.lineTo(ann.end.x, ann.end.y);
+    ctx.stroke();
+    drawArrowHead(ctx, ann.start, ann.end, ann.strokeWidth, ann.headStyle);
+  }
   ctx.restore();
+}
+
+/** Shared control-point math (mirrors geometry.ts, render-local copy). */
+function arrowControlPoint(start: Point, end: Point, bend: number): Point {
+  if (!bend) return { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return {
+    x: (start.x + end.x) / 2 + (-dy / len) * bend,
+    y: (start.y + end.y) / 2 + (dx / len) * bend,
+  };
+}
+
+function drawArrowHeadAt(
+  ctx: CanvasRenderingContext2D,
+  to: Point,
+  angle: number,
+  size: number,
+  style: ArrowHeadStyle,
+): void {
+  // Straight-shaft entry point: project back along the head angle.
+  const from = { x: to.x - Math.cos(angle), y: to.y - Math.sin(angle) };
+  drawArrowHead(ctx, from, to, size, style);
 }
 
 function drawShape(ctx: CanvasRenderingContext2D, ann: ShapeAnnotation): void {

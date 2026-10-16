@@ -17,7 +17,7 @@ export type ToolId =
   | "spotlight"
   | "eraser";
 
-export type ArrowHeadStyle = "triangle" | "chevron" | "stick";
+export type ArrowHeadStyle = "triangle" | "chevron" | "stick" | "bender";
 
 interface AnnotationBase {
   id: string;
@@ -36,6 +36,12 @@ export interface ArrowAnnotation extends AnnotationBase {
   start: Point;
   end: Point;
   headStyle: ArrowHeadStyle;
+  /**
+   * Perpendicular offset (px) of the quadratic control point from the
+   * start→end chord midpoint. Present only for the "Bender" curved
+   * connector; straight arrows omit it (treated as 0).
+   */
+  bend?: number;
 }
 
 export interface ShapeAnnotation extends AnnotationBase {
@@ -91,11 +97,18 @@ export type ContentToBackgroundMessage =
   | ({ kind: "record-start" } & RecordOptions);
 
 export type BackgroundToRecorderMessage =
-  | ({ kind: "offscreen-start"; streamId: string; tabId: number } & RecordOptions)
-  | { kind: "offscreen-pause" }
-  | { kind: "offscreen-resume" }
-  | { kind: "offscreen-stop" }
-  | { kind: "offscreen-discard" };
+  | ({
+      kind: "offscreen-start";
+      streamId: string;
+      tabId: number;
+      requestId: number;
+      target: "offscreen";
+    } & RecordOptions)
+  | { kind: "offscreen-ready-check"; requestId: number; target: "offscreen" }
+  | { kind: "offscreen-pause"; requestId: number; target: "offscreen" }
+  | { kind: "offscreen-resume"; requestId: number; target: "offscreen" }
+  | { kind: "offscreen-stop"; requestId: number; target: "offscreen" }
+  | { kind: "offscreen-discard"; requestId: number; target: "offscreen" };
 
 export type RecorderToBackgroundMessage =
   | { kind: "record-status"; status: RecordingStatus }
