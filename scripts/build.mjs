@@ -27,17 +27,20 @@ const watch = process.argv.includes('--watch');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(path.join(dist, 'icons'), { recursive: true });
 mkdirSync(path.join(dist, 'offscreen'), { recursive: true });
+mkdirSync(path.join(dist, 'permissions'), { recursive: true });
 
 copyFileSync(path.join(root, 'manifest.json'), path.join(dist, 'manifest.json'));
 for (const file of readdirSync(path.join(root, 'icons'))) {
   copyFileSync(path.join(root, 'icons', file), path.join(dist, 'icons', file));
 }
-copyFileSync(path.join(root, 'src/offscreen/index.html'), path.join(dist, 'offscreen.html'));
+copyFileSync(path.join(root, 'src/offscreen/offscreen.html'), path.join(dist, 'offscreen.html'));
+copyFileSync(path.join(root, 'src/permissions/permissions.html'), path.join(dist, 'permissions.html'));
 
 const entryPoints = {
   'background/service-worker': path.join(root, 'src/background/service-worker.ts'),
   'content/overlay': path.join(root, 'src/content/overlay.tsx'),
   'offscreen/recorder': path.join(root, 'src/offscreen/recorder.ts'),
+  'permissions/permissions': path.join(root, 'src/permissions/permissions.ts'),
 };
 
 const options = {

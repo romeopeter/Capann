@@ -40,6 +40,7 @@
     "activeTab",
     "downloads",
     "tabCapture",
+    "tabs",
     "offscreen"
   ],
   "host_permissions": ["<all_urls>"],

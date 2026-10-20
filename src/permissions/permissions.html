@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capann — Camera and microphone</title>
+    <style>
+      :root {
+        --surface-base: #1c1c20;
+        --surface-elevated: #26262b;
+        --border-hairline: rgba(255, 255, 255, 0.08);
+        --accent-violet: #a78bfa;
+        --accent-mint: #86efac;
+        --text-primary: #f5f5f7;
+        --text-muted: #8b8b93;
+        --radius-panel: 20px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 26px;
+        background: var(--surface-base);
+        color: var(--text-primary);
+        font:
+          13px/1.5 Manrope,
+          Inter,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        width: 100%;
+        max-width: 330px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .lede {
+        margin: 0 0 18px;
+        color: var(--text-muted);
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 12px;
+        margin-bottom: 8px;
+        background: var(--surface-elevated);
+        border: 1px solid var(--border-hairline);
+        border-radius: 12px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #3f3f46;
+        flex: none;
+        transition: background 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .dot.granted {
+        background: var(--accent-mint);
+      }
+      .dot.blocked {
+        background: #fca5a5;
+      }
+      .row[hidden] {
+        display: none;
+      }
+      .state {
+        margin-left: auto;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+      }
+      button {
+        font: inherit;
+      }
+      .primary {
+        width: 100%;
+        margin-top: 12px;
+        padding: 10px 14px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--accent-violet);
+        color: #17131f;
+        font-weight: 700;
+        cursor: pointer;
+        transition: filter 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .primary:hover:not(:disabled) {
+        filter: brightness(1.06);
+      }
+      .primary:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .status {
+        min-height: 20px;
+        margin-top: 12px;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+      .status.ok {
+        color: var(--accent-mint);
+      }
+      .status.error {
+        color: #fca5a5;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Camera and microphone</h1>
+      <p class="lede">
+        Capann uses these only while recording a tab. Chrome will ask you to
+        allow access.
+      </p>
+      <div class="row" id="camera-row">
+        <span class="dot" id="camera-dot"></span>
+        <span>Camera</span>
+        <span class="state" id="camera-state">Needed</span>
+      </div>
+      <div class="row" id="microphone-row">
+        <span class="dot" id="microphone-dot"></span>
+        <span>Microphone</span>
+        <span class="state" id="microphone-state">Needed</span>
+      </div>
+      <button class="primary" id="allow" type="button">Allow</button>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+    </main>
+    <script src="permissions/permissions.js"></script>
+  </body>
+</html>

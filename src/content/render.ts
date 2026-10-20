@@ -7,6 +7,7 @@
  * Key functions:
  * - drawAnnotation: Renders a single annotation object
  * - redrawAll: Clears and redraws the entire annotation layer
+ * - drawTextHover: Subtle affordance shown when the text tool hovers a note
  * - Specialized renderers for each annotation type (stroke, arrow, shape, text)
  * - Arrow head rendering with multiple style options (triangle, chevron, stick)
  */
@@ -20,6 +21,13 @@ import type {
   StrokeAnnotation,
   TextAnnotation,
 } from "../shared/types";
+import {
+  bubbleFont,
+  roundedRectPath,
+  tailOutlinePath,
+  tailTrianglePath,
+  textBubbleLayout,
+} from "./text-bubble";
 
 function drawStroke(
   ctx: CanvasRenderingContext2D,
@@ -182,11 +190,123 @@ function drawShape(ctx: CanvasRenderingContext2D, ann: ShapeAnnotation): void {
 }
 
 function drawText(ctx: CanvasRenderingContext2D, ann: TextAnnotation): void {
+  const layout = textBubbleLayout(ann);
+  const {
+    body,
+    tail,
+    width,
+    height,
+    lines,
+    fontSize,
+    lineHeight,
+    padding,
+  } = layout;
+  const localTail = tail
+    ? {
+        baseLeft: {
+          x: tail.baseLeft.x - body.left,
+          y: tail.baseLeft.y - body.top,
+        },
+        baseRight: {
+          x: tail.baseRight.x - body.left,
+          y: tail.baseRight.y - body.top,
+        },
+        tip: {
+          x: tail.tip.x - body.left,
+          y: tail.tip.y - body.top,
+        },
+        side: tail.side,
+      }
+    : null;
+
   ctx.save();
-  ctx.fillStyle = ann.color;
-  ctx.font = `600 ${ann.fontSize}px system-ui, -apple-system, sans-serif`;
-  ctx.textBaseline = "alphabetic";
-  ctx.fillText(ann.text, ann.position.x, ann.position.y);
+  ctx.translate(body.left, body.top);
+
+  const bodyPath = new Path2D(roundedRectPath(width, height));
+
+  // One shadow pass covers the body and the tail silhouette.
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.4)";
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 6;
+  ctx.fillStyle = "rgba(28,28,32,0.96)";
+  ctx.fill(bodyPath);
+  if (localTail) {
+    ctx.fillStyle = ann.color;
+    ctx.fill(new Path2D(tailTrianglePath(localTail)));
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 1;
+  ctx.stroke(bodyPath);
+
+  if (localTail) {
+    // Re-fill after the body stroke so the tail base does not show a seam,
+    // then outline only the two outer edges to continue the border.
+    ctx.fillStyle = ann.color;
+    ctx.fill(new Path2D(tailTrianglePath(localTail)));
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    ctx.stroke(new Path2D(tailOutlinePath(localTail)));
+  }
+
+  if (ann.text.trim()) {
+    ctx.save();
+    ctx.clip(bodyPath);
+    ctx.fillStyle = "#F5F5F7";
+    ctx.font = bubbleFont(fontSize);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    lines.forEach((line, index) => {
+      ctx.fillText(
+        line,
+        padding,
+        padding + lineHeight * index + lineHeight / 2,
+      );
+    });
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Subtle violet halo shown while the text tool hovers a committed note.
+ * Deliberately no scale or size change — just enough to signal "click to
+ * edit" without moving the annotation.
+ */
+export function drawTextHover(
+  ctx: CanvasRenderingContext2D,
+  ann: TextAnnotation,
+): void {
+  const layout = textBubbleLayout(ann);
+  const { body, tail, width, height } = layout;
+  ctx.save();
+  ctx.translate(body.left, body.top);
+  ctx.strokeStyle = "rgba(167,139,250,0.8)";
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = "rgba(167,139,250,0.5)";
+  ctx.shadowBlur = 12;
+  ctx.stroke(new Path2D(roundedRectPath(width, height)));
+  if (tail) {
+    const localTail = {
+      baseLeft: {
+        x: tail.baseLeft.x - body.left,
+        y: tail.baseLeft.y - body.top,
+      },
+      baseRight: {
+        x: tail.baseRight.x - body.left,
+        y: tail.baseRight.y - body.top,
+      },
+      tip: {
+        x: tail.tip.x - body.left,
+        y: tail.tip.y - body.top,
+      },
+      side: tail.side,
+    };
+    ctx.stroke(new Path2D(tailOutlinePath(localTail)));
+  }
   ctx.restore();
 }
 

@@ -14,6 +14,14 @@
  */
 
 import type { AnnotationObject, ArrowAnnotation, Point, ShapeAnnotation, TextAnnotation } from "../shared/types";
+import {
+  clampFontSize,
+  clampWidth,
+  TEXT_BUBBLE,
+  textBubbleLayout,
+  textStrokeForFont,
+  triangleContains,
+} from "./text-bubble";
 
 export interface Bounds {
   left: number;
@@ -43,12 +51,7 @@ export function annotationBounds(ann: AnnotationObject): Bounds {
     };
   }
   if (ann.type === "text") {
-    return {
-      left: ann.position.x,
-      top: ann.position.y - ann.fontSize * 1.3,
-      right: ann.position.x + ann.text.length * ann.fontSize * 0.6,
-      bottom: ann.position.y,
-    };
+    return textBubbleLayout(ann).body;
   }
   if (!("points" in ann)) return { left: 0, top: 0, right: 0, bottom: 0 };
   const xs = ann.points.map((p) => p.x),
@@ -244,8 +247,9 @@ export function resizeArrow(
 }
 
 /**
- * Resize a text callout: edge/corner drags scale the font size from the
- * box height change, clamped to a readable range.
+ * Resize a text bubble. Top/bottom and corner drags scale the font and the
+ * bubble width together; left/right edge drags change the wrap width only,
+ * so longer notes can be made wider without changing the type size.
  */
 export function resizeText(
   ann: TextAnnotation,
@@ -253,19 +257,26 @@ export function resizeText(
   point: Point,
 ): TextAnnotation {
   const b = annotationBounds(ann);
-  let { top, bottom } = b;
+  let { left, top, right, bottom } = b;
+  if (handle === 0 || handle === 2 || handle === 6) left = point.x;
+  if (handle === 1 || handle === 3 || handle === 7) right = point.x;
   if (handle === 0 || handle === 1 || handle === 4) top = point.y;
   if (handle === 2 || handle === 3 || handle === 5) bottom = point.y;
-  // Horizontal-only drags (left/right edges) keep the size; the box width
-  // is derived from the text so there is nothing to remap.
-  if (handle === 6 || handle === 7) return ann;
+
+  if (handle === 6 || handle === 7) {
+    return { ...ann, width: clampWidth(right - left) };
+  }
+
   const oldH = Math.max(1, b.bottom - b.top);
-  const newH = Math.max(4, bottom - top);
-  const fontSize = Math.min(
-    120,
-    Math.max(10, Math.round(ann.fontSize * (newH / oldH))),
-  );
-  return { ...ann, fontSize };
+  const newH = Math.max(1, bottom - top);
+  const scale = newH / oldH;
+  const fontSize = clampFontSize(ann.fontSize * scale);
+  return {
+    ...ann,
+    fontSize,
+    strokeWidth: textStrokeForFont(fontSize),
+    width: clampWidth((ann.width ?? TEXT_BUBBLE.defaultWidth) * scale),
+  };
 }
 
 /** Dispatch to the per-type resizer for the 8-handle transformer. */
@@ -372,14 +383,24 @@ export function hitTest(point: Point, ann: AnnotationObject): boolean {
       );
     }
     case "text": {
-      const approxWidth = ann.text.length * ann.fontSize * 0.6;
-      const approxHeight = ann.fontSize * 1.3;
-      return (
-        point.x >= ann.position.x &&
-        point.x <= ann.position.x + approxWidth &&
-        point.y >= ann.position.y - approxHeight &&
-        point.y <= ann.position.y
-      );
+      const layout = textBubbleLayout(ann);
+      const b = layout.body;
+      const padding = 3;
+      if (
+        point.x >= b.left - padding &&
+        point.x <= b.right + padding &&
+        point.y >= b.top - padding &&
+        point.y <= b.bottom + padding
+      )
+        return true;
+      return layout.tail
+        ? triangleContains(
+            point,
+            layout.tail.tip,
+            layout.tail.baseLeft,
+            layout.tail.baseRight,
+          )
+        : false;
     }
     default:
       return false;

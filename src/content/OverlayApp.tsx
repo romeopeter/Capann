@@ -14,7 +14,14 @@
  * - Background script message handling
  */
 
-import { useState, useEffect, useRef, useCallback, useContext } from "react";
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useContext,
+} from "react";
 import type {
   AnnotationObject,
   ArrowHeadStyle,
@@ -22,10 +29,13 @@ import type {
   CaptureVisibleTabResponse,
   ContentToBackgroundMessage,
   GetTabIdResponse,
+  MediaPermissionResponse,
+  MediaPermissionState,
   Point,
   RecordOptions,
   RecordingStatus,
   TabAnnotationState,
+  TextAnnotation,
   ToolId,
 } from "../shared/types";
 import { STORAGE_KEY_PREFIX } from "../shared/types";
@@ -42,7 +52,19 @@ import {
   shapeContains,
   translateAnnotation,
 } from "./geometry";
-import { drawAnnotation, redrawAll } from "./render";
+import { drawAnnotation, drawTextHover, redrawAll } from "./render";
+import {
+  clampFontSize,
+  clampWidth,
+  composerMaxHeight,
+  contrastColor,
+  placeTextBubble,
+  roundedRectPath,
+  tailOutlinePath,
+  tailTrianglePath,
+  textFontSize,
+  TEXT_BUBBLE,
+} from "./text-bubble";
 import { CapannShell, SHELL_BUTTON } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
@@ -100,6 +122,113 @@ function eraserCursor(strokeWidth: number): string {
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${r} ${r}, cell`;
 }
 
+interface TextEditor {
+  container: HTMLDivElement;
+  svg: SVGSVGElement;
+  bodyPath: SVGPathElement;
+  tailPath: SVGPathElement;
+  tailOutline: SVGPathElement;
+  input: HTMLTextAreaElement;
+  send: HTMLButtonElement;
+  anchor: Point;
+  existingId: string | null;
+  color: string;
+  width: number;
+  fontSize: number;
+  strokeWidth: number;
+  onResize: () => void;
+}
+
+/**
+ * Size and place the DOM composer from the textarea's measured height. The
+ * tail always points at the original click point, so the bubble appears to
+ * grow out of the page rather than drifting away from the anchor.
+ */
+function positionTextEditor(editor: TextEditor): void {
+  const viewport = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+  const lineHeight = Math.round(
+    editor.fontSize * TEXT_BUBBLE.lineHeightRatio,
+  );
+  const maxHeight = composerMaxHeight(editor.fontSize);
+
+  editor.container.style.width = `${editor.width}px`;
+  editor.input.style.height = "auto";
+  const scrollHeight = editor.input.scrollHeight;
+  const bodyHeight = Math.min(
+    Math.max(scrollHeight, lineHeight + TEXT_BUBBLE.padding * 2),
+    maxHeight,
+  );
+  editor.input.style.height = `${bodyHeight}px`;
+  editor.input.style.overflowY = scrollHeight > maxHeight ? "auto" : "hidden";
+
+  const { body, tail } = placeTextBubble(
+    editor.anchor,
+    editor.width,
+    bodyHeight,
+    viewport,
+  );
+  const bubbleWidth = body.right - body.left;
+  const bubbleHeight = body.bottom - body.top;
+
+  editor.container.style.left = `${body.left}px`;
+  editor.container.style.top = `${body.top}px`;
+  editor.container.style.width = `${bubbleWidth}px`;
+  editor.container.style.height = `${bubbleHeight}px`;
+
+  editor.svg.setAttribute("viewBox", `0 0 ${bubbleWidth} ${bubbleHeight}`);
+  editor.svg.setAttribute("width", `${bubbleWidth}`);
+  editor.svg.setAttribute("height", `${bubbleHeight}`);
+  editor.bodyPath.setAttribute(
+    "d",
+    roundedRectPath(bubbleWidth, bubbleHeight),
+  );
+
+  if (tail) {
+    const localTail = {
+      baseLeft: {
+        x: tail.baseLeft.x - body.left,
+        y: tail.baseLeft.y - body.top,
+      },
+      baseRight: {
+        x: tail.baseRight.x - body.left,
+        y: tail.baseRight.y - body.top,
+      },
+      tip: {
+        x: tail.tip.x - body.left,
+        y: tail.tip.y - body.top,
+      },
+      side: tail.side,
+    };
+    editor.tailPath.setAttribute("d", tailTrianglePath(localTail));
+    editor.tailOutline.setAttribute("d", tailOutlinePath(localTail));
+    editor.tailPath.style.display = "";
+    editor.tailOutline.style.display = "";
+  } else {
+    editor.tailPath.style.display = "none";
+    editor.tailOutline.style.display = "none";
+  }
+
+  const buttonGap = 38;
+  const canUseRight = body.right + buttonGap <= viewport.width - 8;
+  const canUseLeft = body.left - buttonGap >= 8;
+  editor.send.style.left = "";
+  editor.send.style.right = "";
+  if (canUseRight) {
+    editor.send.style.right = `-${buttonGap}px`;
+    editor.send.style.bottom = "0px";
+  } else if (canUseLeft) {
+    editor.send.style.left = `-${buttonGap}px`;
+    editor.send.style.bottom = "0px";
+  } else {
+    // Extremely narrow viewport: tuck the button into the lower-right corner.
+    editor.send.style.right = "4px";
+    editor.send.style.bottom = "4px";
+  }
+}
+
 export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
@@ -115,6 +244,14 @@ export function OverlayApp() {
     microphone: true,
     tabAudio: true,
   });
+  const [recorderPreparation, setRecorderPreparation] = useState<
+    "idle" | "preparing" | "ready" | "failed"
+  >("idle");
+  const [startRequested, setStartRequested] = useState(false);
+  const [permissionRequested, setPermissionRequested] = useState(false);
+  const [mediaPermission, setMediaPermission] =
+    useState<MediaPermissionState | null>(null);
+  const [recorderPreparationError, setRecorderPreparationError] = useState("");
   const [drawModeEnabled, setDrawModeEnabled] = useState(false);
   const [tool, setTool] = useState<ToolId>("pencil");
   const [color, setColor] = useState("#A78BFA");
@@ -127,6 +264,9 @@ export function OverlayApp() {
   const [future, setFuture] = useState<AnnotationObject[][]>([]);
   const [statusText, setStatusText] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Set while a committed note is being edited in the DOM composer. The
+  // canvas renderer hides that note so the composer is the only copy visible.
+  const [editingId, setEditingId] = useState<string | null>(null);
   // Session controls live at the shell level so they survive view switches
   // and are independent of any single view. Their close buttons only remove
   // the feature, never Capann itself.
@@ -148,8 +288,8 @@ export function OverlayApp() {
   const laserActiveRef = useRef(false);
   const rafHandleRef = useRef(0);
   const saveTimerRef = useRef(0);
-  const editingInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const editingPointRef = useRef<Point | null>(null);
+  const editorRef = useRef<TextEditor | null>(null);
+  const objectsRef = useRef<AnnotationObject[]>(objects);
   const selectionDragRef = useRef<{
     kind: "move" | "resize" | "bend";
     object: AnnotationObject;
@@ -162,6 +302,23 @@ export function OverlayApp() {
   const objectsCanvasRef = useRef<HTMLCanvasElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
   const timerRef = useRef<number | undefined>(undefined);
+
+  // The composer's event listeners outlive a render; keep the latest objects
+  // in a ref so a blur/click-away commit never writes a stale snapshot.
+  useLayoutEffect(() => {
+    objectsRef.current = objects;
+  }, [objects]);
+
+  // Tear down a composer if the overlay itself unmounts mid-edit.
+  useEffect(() => {
+    return () => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      window.removeEventListener("resize", editor.onResize);
+      editor.container.remove();
+      editorRef.current = null;
+    };
+  }, []);
 
   const storageKey = useCallback(
     () => `${STORAGE_KEY_PREFIX}${tabId}`,
@@ -203,15 +360,29 @@ export function OverlayApp() {
     objectsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    redrawAll(objectsCtx, width, height, objects);
-  }, [objects]);
+    redrawAll(
+      objectsCtx,
+      width,
+      height,
+      editingId
+        ? objects.filter((object) => object.id !== editingId)
+        : objects,
+    );
+  }, [editingId, objects]);
 
   const redrawObjects = useCallback(() => {
     const objectsCanvas = objectsCanvasRef.current;
     if (!objectsCanvas) return;
     const ctx = objectsCanvas.getContext("2d")!;
-    redrawAll(ctx, window.innerWidth, window.innerHeight, objects);
-  }, [objects]);
+    redrawAll(
+      ctx,
+      window.innerWidth,
+      window.innerHeight,
+      editingId
+        ? objects.filter((object) => object.id !== editingId)
+        : objects,
+    );
+  }, [editingId, objects]);
 
   const clearLive = useCallback(() => {
     const liveCanvas = liveCanvasRef.current;
@@ -351,63 +522,228 @@ export function OverlayApp() {
     });
   }, []);
 
-  const commitTextInput = useCallback(() => {
-    const input = editingInputRef.current;
-    const point = editingPointRef.current;
-    if (!input || !point) return;
-    editingInputRef.current = null;
-    editingPointRef.current = null;
-    const text = input.value.trim();
-    input.remove();
-    if (!text) return;
-    const id = makeId();
-    commit([
-      ...objects,
-      {
-        id,
-        type: "text",
-        color,
-        strokeWidth,
-        createdAt: Date.now(),
-        position: point,
+  /**
+   * Commit or cancel the active DOM composer. Reads the latest objects from a
+   * ref because the textarea's blur handler is registered once, long before a
+   * later render — using the render's `objects` here would drop annotations
+   * created since the composer opened.
+   */
+  const finishTextInput = useCallback((mode: "commit" | "cancel") => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editorRef.current = null;
+    window.removeEventListener("resize", editor.onResize);
+
+    const text = editor.input.value.trim();
+    const existingId = editor.existingId;
+    editor.container.remove();
+    setEditingId(null);
+
+    const current = objectsRef.current;
+    const existing = existingId
+      ? current.find(
+          (object): object is TextAnnotation =>
+            object.id === existingId && object.type === "text",
+        )
+      : undefined;
+
+    // Esc leaves an existing note exactly as it was and discards a new one.
+    if (mode === "cancel") return;
+
+    if (existing) {
+      if (!text) {
+        objectsRef.current = current.filter(
+          (object) => object.id !== existing.id,
+        );
+        setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+        setFuture([]);
+        setObjects(objectsRef.current);
+        setSelectedId(null);
+        return;
+      }
+      const width = editor.width;
+      const previousWidth = existing.width ?? TEXT_BUBBLE.defaultWidth;
+      if (
+        text === existing.text &&
+        width === previousWidth &&
+        editor.fontSize === existing.fontSize
+      ) {
+        setSelectedId(existing.id);
+        return;
+      }
+      const updated: TextAnnotation = {
+        ...existing,
         text,
-        fontSize: Math.max(14, strokeWidth * 4),
-      },
-    ]);
-    setSelectedId(id);
-  }, [color, strokeWidth, makeId, commit, objects]);
+        width,
+        fontSize: editor.fontSize,
+      };
+      objectsRef.current = current.map((object) =>
+        object.id === existing.id ? updated : object,
+      );
+      setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+      setFuture([]);
+      setObjects(objectsRef.current);
+      setSelectedId(existing.id);
+      return;
+    }
+
+    if (!text) return;
+
+    const annotation: TextAnnotation = {
+      id: makeId(),
+      type: "text",
+      color: editor.color,
+      strokeWidth: editor.strokeWidth,
+      createdAt: Date.now(),
+      position: editor.anchor,
+      text,
+      fontSize: editor.fontSize,
+      width: editor.width,
+    };
+    objectsRef.current = [...current, annotation];
+    setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+    setFuture([]);
+    setObjects(objectsRef.current);
+    setSelectedId(annotation.id);
+  }, [makeId]);
+
+  // Keep a stable entry point for blur, keydown, shell actions, and shortcuts.
+  const finishTextInputRef = useRef(finishTextInput);
+  useLayoutEffect(() => {
+    finishTextInputRef.current = finishTextInput;
+  }, [finishTextInput]);
+  const commitTextInput = useCallback(
+    () => finishTextInputRef.current("commit"),
+    [],
+  );
 
   const beginTextInput = useCallback(
-    (point: Point) => {
-      if (editingInputRef.current) commitTextInput();
+    (anchor: Point, existing?: TextAnnotation) => {
+      // Clicking another note commits the current draft first.
+      finishTextInputRef.current("commit");
       if (!shadowRoot) return;
+      // Re-read the note after that commit: its text may have just changed.
+      const current = existing
+        ? objectsRef.current.find(
+            (object): object is TextAnnotation =>
+              object.id === existing.id && object.type === "text",
+          )
+        : undefined;
+      clearLive();
+
+      const noteColor = current?.color ?? color;
+      const width = clampWidth(current?.width ?? TEXT_BUBBLE.defaultWidth);
+      const fontSize = clampFontSize(
+        current?.fontSize ?? textFontSize(strokeWidth),
+      );
+      const lineHeight = Math.round(
+        fontSize * TEXT_BUBBLE.lineHeightRatio,
+      );
+
+      const container = document.createElement("div");
+      container.className = "text-composer";
+      container.style.setProperty("--note-color", noteColor);
+      container.style.width = `${width}px`;
+
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("class", "text-composer-bg");
+      svg.setAttribute("overflow", "visible");
+      const bodyPath = document.createElementNS(svgNS, "path");
+      bodyPath.setAttribute("class", "text-composer-body");
+      const tailPath = document.createElementNS(svgNS, "path");
+      tailPath.setAttribute("class", "text-composer-tail");
+      const tailOutline = document.createElementNS(svgNS, "path");
+      tailOutline.setAttribute("class", "text-composer-tail-line");
+      svg.append(bodyPath, tailPath, tailOutline);
 
       const input = document.createElement("textarea");
-      input.className = "text-input";
-      input.style.left = `${point.x}px`;
-      input.style.top = `${point.y - strokeWidth * 4}px`;
-      input.style.color = color;
-      input.style.fontSize = `${Math.max(14, strokeWidth * 4)}px`;
+      input.className = "text-composer-input";
       input.rows = 1;
-      shadowRoot.append(input);
-      input.focus();
-      editingInputRef.current = input;
-      editingPointRef.current = point;
+      input.placeholder = "Add comment";
+      input.value = current?.text ?? "";
+      input.spellcheck = false;
+      input.setAttribute("aria-label", "Add comment");
+      input.style.fontSize = `${fontSize}px`;
+      input.style.lineHeight = `${lineHeight}px`;
+      input.style.padding = `${TEXT_BUBBLE.padding}px`;
 
-      const commitText = () => commitTextInput();
-      input.addEventListener("blur", commitText);
-      input.addEventListener("keydown", (ke) => {
-        if (ke.key === "Enter" && !ke.shiftKey) {
-          ke.preventDefault();
-          commitText();
-        } else if (ke.key === "Escape") {
-          ke.preventDefault();
-          input.value = "";
-          commitText();
+      const send = document.createElement("button");
+      send.type = "button";
+      send.className = "text-composer-send";
+      send.title = "Send comment";
+      send.tabIndex = -1;
+      send.setAttribute("aria-label", "Send comment");
+      send.style.background = noteColor;
+      send.style.color = contrastColor(noteColor);
+      send.innerHTML =
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" ' +
+        'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+      container.append(svg, input, send);
+      shadowRoot.append(container);
+
+      const editor: TextEditor = {
+        container,
+        svg,
+        bodyPath,
+        tailPath,
+        tailOutline,
+        input,
+        send,
+        anchor,
+        existingId: current?.id ?? null,
+        color: noteColor,
+        width,
+        fontSize,
+        strokeWidth: current?.strokeWidth ?? strokeWidth,
+        onResize: () => positionTextEditor(editor),
+      };
+
+      editorRef.current = editor;
+      setEditingId(current?.id ?? null);
+
+      const refresh = () => {
+        positionTextEditor(editor);
+        send.disabled = input.value.trim().length === 0;
+      };
+
+      input.addEventListener("input", refresh);
+      input.addEventListener("blur", () => {
+        finishTextInputRef.current("commit");
+      });
+      input.addEventListener("keydown", (event) => {
+        // Let IME composition (e.g. Japanese) own Enter and Escape.
+        if (event.isComposing) return;
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          finishTextInputRef.current("commit");
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          finishTextInputRef.current("cancel");
         }
       });
+      // Keep the textarea focused when the arrow is pressed; commit from
+      // pointerdown so the button never triggers a second blur-commit.
+      send.addEventListener("mousedown", (event) => event.preventDefault());
+      send.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        finishTextInputRef.current("commit");
+      });
+      send.addEventListener("click", (event) => {
+        event.preventDefault();
+        finishTextInputRef.current("commit");
+      });
+
+      window.addEventListener("resize", editor.onResize);
+      refresh();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
     },
-    [color, strokeWidth, commitTextInput, shadowRoot],
+    [shadowRoot, clearLive, color, strokeWidth],
   );
 
   const getSelectedHandle = useCallback(
@@ -482,13 +818,32 @@ export function OverlayApp() {
     [],
   );
 
+  const findTextAnnotation = useCallback(
+    (point: Point, list: AnnotationObject[]) => {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const candidate = list[i]!;
+        if (candidate.type === "text" && hitTest(point, candidate))
+          return candidate;
+      }
+      return undefined;
+    },
+    [],
+  );
+
   const redrawSelection = useCallback(() => {
     clearLive();
-    if (!drawModeEnabled || !selectedId) return;
+    if (!drawModeEnabled || !selectedId || selectedId === editingId) return;
     const selected = objects.find((object) => object.id === selectedId);
     const ctx = liveCanvasRef.current?.getContext("2d");
     if (selected && ctx) drawSelection(ctx, selected);
-  }, [clearLive, drawModeEnabled, drawSelection, objects, selectedId]);
+  }, [
+    clearLive,
+    drawModeEnabled,
+    drawSelection,
+    editingId,
+    objects,
+    selectedId,
+  ]);
 
   const cancelPointer = useCallback(() => {
     resetDrag();
@@ -550,7 +905,12 @@ export function OverlayApp() {
       }
 
       if (tool === "text") {
-        beginTextInput(point);
+        // The composer focuses its textarea while handling this pointerdown.
+        // Stop the canvas's default focus action, which would otherwise blur
+        // the new textarea in the same tick and commit an empty note.
+        e.preventDefault();
+        const target = findTextAnnotation(point, objectsRef.current);
+        beginTextInput(target?.position ?? point, target);
         return;
       }
 
@@ -572,6 +932,7 @@ export function OverlayApp() {
       getSelectedHandle,
       findSelectable,
       beginTextInput,
+      findTextAnnotation,
       eraseAt,
     ],
   );
@@ -584,6 +945,20 @@ export function OverlayApp() {
       // before the stroke-preview branches and needs no drag state of its own.
       if (tool === "eraser") {
         if (eraseBaselineRef.current !== null) eraseAt(point);
+        return;
+      }
+
+      if (tool === "text") {
+        const liveCanvas = liveCanvasRef.current;
+        if (liveCanvas) {
+          // Rebuild the selection layer, then add a soft halo over any note
+          // under the cursor. No transform or size change on hover.
+          redrawSelection();
+          const target = findTextAnnotation(point, objectsRef.current);
+          const ctx = liveCanvas.getContext("2d");
+          if (ctx && target && target.id !== editingId)
+            drawTextHover(ctx, target);
+        }
         return;
       }
 
@@ -728,6 +1103,9 @@ export function OverlayApp() {
       drawSelection,
       getSelectedHandle,
       findSelectable,
+      findTextAnnotation,
+      redrawSelection,
+      editingId,
       objects,
       selectedId,
     ],
@@ -891,11 +1269,25 @@ export function OverlayApp() {
     (width: number) => {
       setStrokeWidth(width);
       const selected = objects.find((object) => object.id === selectedId);
+      if (!selected) return;
+      if (selected.type === "text") {
+        setObjects((prev) =>
+          prev.map((object) =>
+            object.id === selectedId
+              ? {
+                  ...object,
+                  fontSize: textFontSize(width),
+                  strokeWidth: width,
+                }
+              : object,
+          ),
+        );
+        return;
+      }
       if (
-        selected &&
-        (selected.type === "rectangle" ||
-          selected.type === "ellipse" ||
-          selected.type === "arrow")
+        selected.type === "rectangle" ||
+        selected.type === "ellipse" ||
+        selected.type === "arrow"
       ) {
         setObjects((prev) =>
           prev.map((object) =>
@@ -919,22 +1311,33 @@ export function OverlayApp() {
   }, [objects]);
 
   const beginWidthEdit = useCallback(() => {
-    widthEditBaselineRef.current = objects;
-  }, [objects]);
+    // Flush an open text note first so the slider's undo baseline includes the
+    // committed text rather than the pre-blur snapshot.
+    commitTextInput();
+    widthEditBaselineRef.current = objectsRef.current;
+  }, [commitTextInput]);
 
   const handleClear = useCallback(() => {
-    if (objects.length === 0) return;
-    commit([]);
+    // Flush an open composer first so the clear also removes the note being
+    // edited and undo can restore the whole pre-clear state.
+    commitTextInput();
+    const current = objectsRef.current;
+    if (current.length === 0) return;
+    setPast((pastStates) => [...pastStates, current].slice(-HISTORY_LIMIT));
+    setFuture([]);
+    objectsRef.current = [];
+    setObjects([]);
     setSelectedId(null);
     setStatusText("Cleared");
-  }, [commit, objects]);
+  }, [commitTextInput]);
 
   const cycleTool = useCallback(() => {
+    commitTextInput();
     const idx = TOOL_CYCLE_ORDER.indexOf(tool);
     const next = TOOL_CYCLE_ORDER[(idx + 1) % TOOL_CYCLE_ORDER.length]!;
     setTool(next);
     setStatusText(`Tool: ${next}`);
-  }, [tool]);
+  }, [commitTextInput, tool]);
 
   const handleUndo = useCallback(() => {
     if (past.length === 0) return;
@@ -1007,6 +1410,9 @@ export function OverlayApp() {
   }, [commitTextInput]);
 
   const savePng = useCallback(async () => {
+    // Flush an open note first so the export contains the committed bubble
+    // rather than the DOM composer.
+    commitTextInput();
     setStatusText("Capturing...");
     try {
       // Let the browser finish a compositor frame before capture so the PNG
@@ -1033,7 +1439,7 @@ export function OverlayApp() {
       const ctx = composite.getContext("2d")!;
       ctx.drawImage(screenshot, 0, 0, composite.width, composite.height);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      for (const obj of objects) drawAnnotation(ctx, obj);
+      for (const obj of objectsRef.current) drawAnnotation(ctx, obj);
 
       const dataUrl = composite.toDataURL("image/png");
       const filename = `capann-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
@@ -1047,14 +1453,15 @@ export function OverlayApp() {
       setStatusText("Save failed");
       console.error("[Capann] save failed", err);
     }
-  }, [objects]);
+  }, [commitTextInput]);
 
   const handleToolChange = useCallback(
     (newTool: ToolId) => {
+      commitTextInput();
       setTool(newTool);
       resetDrag();
     },
-    [resetDrag],
+    [commitTextInput, resetDrag],
   );
 
   const selectedShape = objects.find((object) => object.id === selectedId);
@@ -1062,7 +1469,8 @@ export function OverlayApp() {
     selectedShape &&
     (selectedShape.type === "rectangle" ||
       selectedShape.type === "ellipse" ||
-      selectedShape.type === "arrow")
+      selectedShape.type === "arrow" ||
+      selectedShape.type === "text")
       ? selectedShape.strokeWidth
       : strokeWidth;
 
@@ -1076,22 +1484,94 @@ export function OverlayApp() {
     (enabled: boolean) => {
       setDrawModeEnabled(enabled);
       if (!enabled) {
+        commitTextInput();
         laserActiveRef.current = false;
         resetDrag();
       }
     },
-    [resetDrag],
+    [commitTextInput, resetDrag],
   );
 
+  // Camera and microphone permission belongs to the extension origin. The
+  // recorder cannot prompt, so the panel reports whether a grant is missing.
+  const refreshPermissions = useCallback(async () => {
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        kind: "record-permission-state",
+      } satisfies ContentToBackgroundMessage)) as MediaPermissionResponse;
+      if (response?.ok)
+        setMediaPermission({
+          camera: response.camera,
+          microphone: response.microphone,
+        });
+    } catch {
+      // A missing answer just leaves the previous state in place.
+    }
+  }, []);
+
+  const prepareRecorder = useCallback(async () => {
+    setRecorderPreparation("preparing");
+    setRecorderPreparationError("");
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        kind: "record-prewarm",
+      } satisfies ContentToBackgroundMessage)) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!response?.ok)
+        throw new Error(
+          response?.error ?? "Capann couldn't prepare recording. Try again.",
+        );
+      setRecorderPreparation("ready");
+      void refreshPermissions();
+    } catch (error) {
+      setRecorderPreparation("failed");
+      setRecorderPreparationError(
+        error instanceof Error
+          ? error.message
+          : "Capann couldn't prepare recording. Try again.",
+      );
+    }
+  }, [refreshPermissions]);
+
+  const requestPermissions = useCallback(async () => {
+    if (permissionRequested) return;
+    setPermissionRequested(true);
+    try {
+      await chrome.runtime.sendMessage({
+        kind: "record-request-permission",
+        camera: recordOptions.camera,
+        microphone: recordOptions.microphone,
+      } satisfies ContentToBackgroundMessage);
+    } catch {
+      // Nothing else to do; the notice stays visible.
+    }
+    // Re-enable the button if the window was closed without a decision.
+    window.setTimeout(() => setPermissionRequested(false), 1_500);
+  }, [
+    permissionRequested,
+    recordOptions.camera,
+    recordOptions.microphone,
+  ]);
+
   const startRecording = useCallback(async () => {
+    if (startRequested) return;
+    if (recorderPreparation !== "ready") {
+      void prepareRecorder();
+      return;
+    }
+    setStartRequested(true);
     commitTextInput();
     handleDrawModeToggle(false);
     setUiView("record");
-    setRecordingStatus({ state: "starting" });
+    setRecordingStatus({ state: "idle" });
+    // Hide synchronously before asking the worker to start capturing. React
+    // effects run after this click; the direct style change guarantees the
+    // first captured frame cannot include Capann's controls or annotations.
+    if (shadowRoot?.host instanceof HTMLElement)
+      shadowRoot.host.style.visibility = "hidden";
     setCaptureHidden(true);
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
     try {
       const response = (await chrome.runtime.sendMessage({
         kind: "record-start",
@@ -1104,19 +1584,39 @@ export function OverlayApp() {
         const status: RecordingStatus = {
           state: "error",
           error: response?.error ?? "Could not start recording.",
+          code: "RECORDER_STARTUP_FAILED",
         };
         setRecordingStatus(status);
         setCaptureHidden(false);
+        setStartRequested(false);
       }
     } catch (error) {
       setRecordingStatus({
         state: "error",
         error:
           error instanceof Error ? error.message : "Could not start recording.",
+        code: "RECORDER_STARTUP_FAILED",
       });
       setCaptureHidden(false);
+      setStartRequested(false);
     }
-  }, [commitTextInput, handleDrawModeToggle, recordOptions]);
+  }, [
+    commitTextInput,
+    handleDrawModeToggle,
+    recordOptions,
+    recorderPreparation,
+    prepareRecorder,
+    shadowRoot,
+    startRequested,
+  ]);
+
+  // Create the offscreen document while the user chooses recording options.
+  // Getting the recorder ready up front means the tab stream ID can be handed
+  // over immediately, before Chrome's short-lived IDs expire.
+  useEffect(() => {
+    if (uiView !== "record" || recorderPreparation !== "idle") return;
+    void prepareRecorder();
+  }, [uiView, recorderPreparation, prepareRecorder]);
 
   // Initialize
   useEffect(() => {
@@ -1274,9 +1774,31 @@ export function OverlayApp() {
         case "clear-annotations":
           handleClear();
           break;
+        case "recording-prepare-hide": {
+          // Hide the Capann host before capture starts so controls and
+          // annotations cannot enter the recording.
+          setCaptureHidden(true);
+          break;
+        }
+        case "recording-prepare-show": {
+          // Show the Capann host again when recording didn't start.
+          setCaptureHidden(false);
+          break;
+        }
         case "cycle-tool":
           cycleTool();
           break;
+        case "recording-permission": {
+          setMediaPermission({
+            camera: message.camera,
+            microphone: message.microphone,
+          });
+          // The worker replaced the recorder so the new grant applies; prepare
+          // it again from a clean state.
+          setRecorderPreparation("idle");
+          setRecorderPreparationError("");
+          break;
+        }
         case "recording-status": {
           setRecordingStatus(message.status);
           const active =
@@ -1285,6 +1807,7 @@ export function OverlayApp() {
             message.status.state === "starting";
           setCaptureHidden(active);
           if (!active) {
+            setStartRequested(false);
             setUiView("record");
             setStatusText(
               message.status.state === "saved"
@@ -1316,6 +1839,15 @@ export function OverlayApp() {
     recordingStatus.state === "recording" ||
     recordingStatus.state === "paused" ||
     recordingStatus.state === "starting";
+  // Options are on by default, so a fresh install needs one grant before the
+  // camera bubble or microphone audio can be included.
+  const missingPermissions: ("camera" | "microphone")[] = [];
+  if (mediaPermission) {
+    if (recordOptions.camera && mediaPermission.camera !== "granted")
+      missingPermissions.push("camera");
+    if (recordOptions.microphone && mediaPermission.microphone !== "granted")
+      missingPermissions.push("microphone");
+  }
   const warn = seconds < 120;
 
   // Render fallback notices for unavailable inputs during recording.
@@ -1461,18 +1993,92 @@ export function OverlayApp() {
           width: 100%;
           height: 100%;
         }
-        .text-input {
+        .text-composer {
           position: fixed;
           z-index: 2147483647;
-          font-family: system-ui, sans-serif;
-          font-weight: 600;
-          border: 1.5px dashed #7c3aed;
-          background: rgba(255,255,255,0.9);
-          padding: 2px 4px;
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+          font-weight: 500;
+        }
+        .text-composer-bg {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          overflow: visible;
+          pointer-events: none;
+          filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.38));
+        }
+        .text-composer-body {
+          fill: rgba(28, 28, 32, 0.96);
+          stroke: rgba(255, 255, 255, 0.15);
+          stroke-width: 1;
+          transition: stroke 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .text-composer:focus-within .text-composer-body {
+          stroke: #A78BFA;
+        }
+        .text-composer-tail {
+          fill: var(--note-color, #A78BFA);
+        }
+        .text-composer-tail-line {
+          fill: none;
+          stroke: rgba(255, 255, 255, 0.15);
+          stroke-width: 1;
+        }
+        .text-composer-input {
+          position: relative;
+          z-index: 1;
+          display: block;
+          width: 100%;
+          height: auto;
+          box-sizing: border-box;
+          border: 0;
           outline: none;
+          background: transparent;
+          color: #F5F5F7;
+          caret-color: #A78BFA;
           resize: none;
-          min-width: 60px;
-          line-height: 1.2;
+          overflow-y: hidden;
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+          font-weight: 500;
+        }
+        .text-composer-input::placeholder {
+          color: #8B8B93;
+          opacity: 1;
+        }
+        .text-composer-input::selection {
+          background: rgba(167, 139, 250, 0.4);
+        }
+        .text-composer-input::-webkit-scrollbar {
+          width: 6px;
+        }
+        .text-composer-input::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.18);
+          border-radius: 999px;
+        }
+        .text-composer-send {
+          position: absolute;
+          z-index: 2;
+          width: 30px;
+          height: 30px;
+          padding: 0;
+          border: 0;
+          border-radius: 999px;
+          display: grid;
+          place-items: center;
+          box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+          cursor: pointer;
+          transition:
+            transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
+            opacity 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .text-composer-send:disabled {
+          opacity: 0.35;
+          cursor: default;
+          box-shadow: none;
+        }
+        .text-composer-send:not(:disabled):hover {
+          transform: scale(1.06);
         }
       `}</style>
       <div style={hiddenByCapture}>
@@ -1607,9 +2213,44 @@ export function OverlayApp() {
                 </label>
               ))}
             </div>
+            {missingPermissions.length > 0 && !recordingIsActive && (
+              <div style={{ marginTop: 12 }}>
+                <p
+                  style={{
+                    margin: "0 0 8px",
+                    color: "#F5E8A6",
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {missingPermissions.length === 2
+                    ? "Camera and microphone need permission — allow them, or record without them."
+                    : `${
+                        missingPermissions[0] === "camera"
+                          ? "Camera"
+                          : "Microphone"
+                      } needs permission — allow it, or record without it.`}
+                </p>
+                <button
+                  onClick={() => void requestPermissions()}
+                  disabled={permissionRequested}
+                  style={{
+                    ...SHELL_BUTTON,
+                    width: "100%",
+                    cursor: permissionRequested ? "wait" : "pointer",
+                    opacity: permissionRequested ? 0.65 : 1,
+                  }}
+                >
+                  {permissionRequested ? "Waiting for Chrome…" : "Allow"}
+                </button>
+              </div>
+            )}
             {!recordingIsActive && (
               <button
                 onClick={() => void startRecording()}
+                disabled={
+                  recorderPreparation === "preparing" || startRequested
+                }
                 style={{
                   ...SHELL_BUTTON,
                   width: "100%",
@@ -1618,14 +2259,47 @@ export function OverlayApp() {
                   border: 0,
                   color: "#17131F",
                   fontWeight: 700,
+                  cursor:
+                    recorderPreparation === "preparing" || startRequested
+                      ? "wait"
+                      : "pointer",
+                  opacity:
+                    recorderPreparation === "preparing" || startRequested
+                      ? 0.65
+                      : 1,
                 }}
               >
-                Start recording
+                {recorderPreparation === "preparing"
+                  ? "Preparing recorder…"
+                  : startRequested
+                    ? "Starting recording…"
+                    : recorderPreparation === "failed"
+                    ? "Try preparing recorder again"
+                    : "Start recording"}
               </button>
+            )}
+            {recorderPreparation === "failed" && !recordingIsActive && (
+              <p role="alert" style={{ color: "#FCA5A5", margin: "10px 0 0" }}>
+                {recorderPreparationError}
+              </p>
             )}
             {recordingStatus.state === "starting" && (
               <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>
-                Preparing capture…
+                {(() => {
+                  const s = recordingStatus as { stage?: string; sessionId?: string };
+                  switch (s.stage) {
+                    case "preparing-recorder":
+                      return "Preparing recorder…";
+                    case "acquiring-tab-stream":
+                      return "Connecting to this tab…";
+                    case "preparing-video":
+                      return "Preparing video…";
+                    case "starting-recorder":
+                      return "Starting recorder…";
+                    default:
+                      return "Preparing capture…";
+                  }
+                })()}
               </p>
             )}
             {recordingStatus.state === "recording" && (
@@ -1859,6 +2533,9 @@ export function OverlayApp() {
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={cancelPointer}
+            onPointerLeave={() => {
+              if (tool === "text") redrawSelection();
+            }}
           />
         </div>
       </div>
