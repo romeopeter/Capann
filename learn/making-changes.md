@@ -13,7 +13,7 @@ For recording changes, also update [Recording](recording.md). Check all three ty
 
 ## Adding an annotation behavior
 
-Update the annotation types first, then implement rendering and geometry/hit testing, wire pointer handling in `OverlayApp.tsx`, and add any toolbar control in `toolbar.tsx`. Verify saved data can be redrawn and exported. Keep pointer-drag previews temporary and group a completed gesture into one history action.
+Update the annotation types first, then implement rendering and geometry/hit testing, wire pointer handling in `OverlayApp.tsx`, and add any toolbar control in `annotate-controls.tsx`. Put mode-level actions (undo/redo, duplicate) in the shell header via `CapannShell`'s `actions` slot rather than in the controls body. Verify saved data can be redrawn and exported. Keep pointer-drag previews temporary and group a completed gesture into one history action.
 
 ## Design and React conventions
 
