@@ -1,17 +1,49 @@
 /**
  * OverlayApp.tsx
  *
- * Main application component for the Capann annotation overlay.
- * Manages all annotation state, canvas rendering, tool interactions, and user input.
+ * Main application component for the Capann overlay.
+ *
+ * ── FUSION POINT: read this before changing anything here ──────────────────
+ *
+ * This file is where Capann's two independent halves meet:
+ *
+ *   annotation  (tools, canvases, history, per-tab persistence)
+ *   recording   (tab capture, media permission, recorder lifecycle)
+ *
+ * The halves themselves stay apart on purpose. `render.ts` and `geometry.ts`
+ * know nothing about capture; `offscreen/recorder.ts` knows nothing about
+ * annotations. This component owns both state trees and both message streams,
+ * which makes it the one place where a change to one half can silently break
+ * the other.
+ *
+ * The overlap is small and specific. Keep it that way:
+ *
+ * - `captureHidden` belongs to the recorder. It means "a capture may be
+ *   running, keep the overlay out of the frames," and only recording status
+ *   writes it.
+ * - PNG export needs the SAME effect (the overlay must be off screen before a
+ *   screenshot) but must NOT reuse `captureHidden`, because export is a
+ *   one-shot hide that has to restore to whatever the recorder currently wants.
+ *   `savePng` therefore hides the shadow host directly and restores from
+ *   `captureHidden`.
+ * - The shadow host is the only sanctioned way to make Capann invisible to a
+ *   capture. Hiding it hides everything: canvases, shell, timer/mask chips,
+ *   and any open text composer.
+ *
+ * If a change removes the hide step from ANY capture path, that path starts
+ * screenshotting its own annotations and the PNG gains a doubled copy of every
+ * object. That regression already shipped once: commit 3eaa296 replaced the
+ * export's `isCapturing` flag with the recording-only `captureHidden` and never
+ * rewired the export. See "Fusion code" in AGENTS.md before deleting or
+ * repurposing a flag, effect, or effect-like step in this file.
  *
  * Key responsibilities:
  * - Canvas lifecycle (creation, resizing, rendering)
  * - Annotation drawing logic for all tool types (pencil, highlighter, arrow, shapes, text)
- * - Undo/redo history management
- * - Laser pointer and spotlight effects
+ * - Undo/redo history management, laser pointer and spotlight effects
  * - Chrome storage integration for per-tab persistence
  * - Screenshot capture and PNG export
- * - Background script message handling
+ * - Record view, recorder pre-warm, and recording status handling
  */
 
 import {
@@ -66,8 +98,10 @@ import {
   TEXT_BUBBLE,
 } from "./text-bubble";
 import { CapannShell, SHELL_BUTTON } from "./shell";
+import type { ShellPosition } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
+import { MarkerCircleIcon, RecordIcon } from "@phosphor-icons/react";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "pencil",
@@ -104,6 +138,9 @@ const MASK_SWATCHES = ["transparent", "#0A0A0C", "#FFFFFF"];
 const UNDO_ICON = "M9 7L5 11l4 4M5 11h8a5 5 0 010 10h-3";
 const REDO_ICON = "M15 7l4 4-4 4M19 11h-8a5 5 0 000 10h3";
 const DUPLICATE_ICON = "M9 9h10v10H9zM5 15V5h10";
+/** Trash can, drawn at the same stroke weight as the other header icons. */
+const DELETE_ICON =
+  "M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9L17.5 7M10 11v5M14 11v5";
 
 /** Cap on retained undo states, so long sessions don't grow memory unbounded. */
 const HISTORY_LIMIT = 50;
@@ -120,6 +157,62 @@ function eraserCursor(strokeWidth: number): string {
     `<circle cx="${r}" cy="${r}" r="${r - 1}" fill="rgba(245,245,247,0.18)" ` +
     `stroke="#F5F5F7" stroke-width="1.5"/></svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${r} ${r}, cell`;
+}
+
+/**
+ * Compact icon button for the shell header. One component keeps undo, redo,
+ * duplicate, and delete visually identical — they previously repeated the same
+ * thirty lines of inline styling, which made every new header action a
+ * copy-paste operation.
+ *
+ * `disabled` mutes the stroke and drops the hover fill, matching how undo/redo
+ * used to behave when their history stacks were empty.
+ */
+function HeaderIcon({
+  title,
+  path,
+  onClick,
+  disabled = false,
+}: {
+  title: string;
+  path: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      style={{
+        width: "26px",
+        height: "26px",
+        borderRadius: "12px",
+        background: "transparent",
+        border: "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: disabled ? "default" : "pointer",
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = "#26262B";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+        <path
+          d={path}
+          stroke={disabled ? "rgba(139,139,147,0.45)" : "#F5F5F7"}
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
 }
 
 interface TextEditor {
@@ -149,9 +242,7 @@ function positionTextEditor(editor: TextEditor): void {
     width: window.innerWidth,
     height: window.innerHeight,
   };
-  const lineHeight = Math.round(
-    editor.fontSize * TEXT_BUBBLE.lineHeightRatio,
-  );
+  const lineHeight = Math.round(editor.fontSize * TEXT_BUBBLE.lineHeightRatio);
   const maxHeight = composerMaxHeight(editor.fontSize);
 
   editor.container.style.width = `${editor.width}px`;
@@ -181,10 +272,7 @@ function positionTextEditor(editor: TextEditor): void {
   editor.svg.setAttribute("viewBox", `0 0 ${bubbleWidth} ${bubbleHeight}`);
   editor.svg.setAttribute("width", `${bubbleWidth}`);
   editor.svg.setAttribute("height", `${bubbleHeight}`);
-  editor.bodyPath.setAttribute(
-    "d",
-    roundedRectPath(bubbleWidth, bubbleHeight),
-  );
+  editor.bodyPath.setAttribute("d", roundedRectPath(bubbleWidth, bubbleHeight));
 
   if (tail) {
     const localTail = {
@@ -235,6 +323,23 @@ export function OverlayApp() {
   const [uiView, setUiView] = useState<
     "closed" | "chooser" | "annotate" | "record"
   >("closed");
+  /**
+   * Panel drag position. Owned here rather than in `CapannShell` because each
+   * view mounts a different shell instance — local state would be discarded on
+   * every chooser/Annotate/Record switch and snap the panel home.
+   *
+   * `null` means docked top-right. Closing the panel clears it, so the next
+   * open starts from the base position.
+   */
+  const [panelPosition, setPanelPosition] = useState<ShellPosition | null>(
+    null,
+  );
+  /**
+   * Recorder-owned: true while a capture may be running, so the whole overlay
+   * stays out of the video. Only recording status / recorder lifecycle writes
+   * this. Do NOT reuse it for PNG export — `savePng` hides and restores the
+   * host itself so the two capture paths cannot cancel each other out.
+   */
   const [captureHidden, setCaptureHidden] = useState(true);
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
     state: "idle",
@@ -298,6 +403,12 @@ export function OverlayApp() {
     baseline: AnnotationObject[];
   } | null>(null);
   const widthEditBaselineRef = useRef<AnnotationObject[] | null>(null);
+  /**
+   * Guards PNG export against re-entry. A second overlapping save would restore
+   * host visibility while the first capture is still in flight, leaking the
+   * overlay into the first screenshot.
+   */
+  const savingPngRef = useRef(false);
 
   const objectsCanvasRef = useRef<HTMLCanvasElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -364,9 +475,7 @@ export function OverlayApp() {
       objectsCtx,
       width,
       height,
-      editingId
-        ? objects.filter((object) => object.id !== editingId)
-        : objects,
+      editingId ? objects.filter((object) => object.id !== editingId) : objects,
     );
   }, [editingId, objects]);
 
@@ -378,9 +487,7 @@ export function OverlayApp() {
       ctx,
       window.innerWidth,
       window.innerHeight,
-      editingId
-        ? objects.filter((object) => object.id !== editingId)
-        : objects,
+      editingId ? objects.filter((object) => object.id !== editingId) : objects,
     );
   }, [editingId, objects]);
 
@@ -528,84 +635,87 @@ export function OverlayApp() {
    * later render — using the render's `objects` here would drop annotations
    * created since the composer opened.
    */
-  const finishTextInput = useCallback((mode: "commit" | "cancel") => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    editorRef.current = null;
-    window.removeEventListener("resize", editor.onResize);
+  const finishTextInput = useCallback(
+    (mode: "commit" | "cancel") => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editorRef.current = null;
+      window.removeEventListener("resize", editor.onResize);
 
-    const text = editor.input.value.trim();
-    const existingId = editor.existingId;
-    editor.container.remove();
-    setEditingId(null);
+      const text = editor.input.value.trim();
+      const existingId = editor.existingId;
+      editor.container.remove();
+      setEditingId(null);
 
-    const current = objectsRef.current;
-    const existing = existingId
-      ? current.find(
-          (object): object is TextAnnotation =>
-            object.id === existingId && object.type === "text",
-        )
-      : undefined;
+      const current = objectsRef.current;
+      const existing = existingId
+        ? current.find(
+            (object): object is TextAnnotation =>
+              object.id === existingId && object.type === "text",
+          )
+        : undefined;
 
-    // Esc leaves an existing note exactly as it was and discards a new one.
-    if (mode === "cancel") return;
+      // Esc leaves an existing note exactly as it was and discards a new one.
+      if (mode === "cancel") return;
 
-    if (existing) {
-      if (!text) {
-        objectsRef.current = current.filter(
-          (object) => object.id !== existing.id,
+      if (existing) {
+        if (!text) {
+          objectsRef.current = current.filter(
+            (object) => object.id !== existing.id,
+          );
+          setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+          setFuture([]);
+          setObjects(objectsRef.current);
+          setSelectedId(null);
+          return;
+        }
+        const width = editor.width;
+        const previousWidth = existing.width ?? TEXT_BUBBLE.defaultWidth;
+        if (
+          text === existing.text &&
+          width === previousWidth &&
+          editor.fontSize === existing.fontSize
+        ) {
+          setSelectedId(existing.id);
+          return;
+        }
+        const updated: TextAnnotation = {
+          ...existing,
+          text,
+          width,
+          fontSize: editor.fontSize,
+        };
+        objectsRef.current = current.map((object) =>
+          object.id === existing.id ? updated : object,
         );
         setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
         setFuture([]);
         setObjects(objectsRef.current);
-        setSelectedId(null);
-        return;
-      }
-      const width = editor.width;
-      const previousWidth = existing.width ?? TEXT_BUBBLE.defaultWidth;
-      if (
-        text === existing.text &&
-        width === previousWidth &&
-        editor.fontSize === existing.fontSize
-      ) {
         setSelectedId(existing.id);
         return;
       }
-      const updated: TextAnnotation = {
-        ...existing,
+
+      if (!text) return;
+
+      const annotation: TextAnnotation = {
+        id: makeId(),
+        type: "text",
+        color: editor.color,
+        strokeWidth: editor.strokeWidth,
+        createdAt: Date.now(),
+        position: editor.anchor,
         text,
-        width,
         fontSize: editor.fontSize,
+        width: editor.width,
       };
-      objectsRef.current = current.map((object) =>
-        object.id === existing.id ? updated : object,
-      );
+      objectsRef.current = [...current, annotation];
       setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
       setFuture([]);
       setObjects(objectsRef.current);
-      setSelectedId(existing.id);
-      return;
-    }
-
-    if (!text) return;
-
-    const annotation: TextAnnotation = {
-      id: makeId(),
-      type: "text",
-      color: editor.color,
-      strokeWidth: editor.strokeWidth,
-      createdAt: Date.now(),
-      position: editor.anchor,
-      text,
-      fontSize: editor.fontSize,
-      width: editor.width,
-    };
-    objectsRef.current = [...current, annotation];
-    setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
-    setFuture([]);
-    setObjects(objectsRef.current);
-    setSelectedId(annotation.id);
-  }, [makeId]);
+      setSelectedId(annotation.id);
+    },
+    [makeId],
+  );
 
   // Keep a stable entry point for blur, keydown, shell actions, and shortcuts.
   const finishTextInputRef = useRef(finishTextInput);
@@ -636,9 +746,7 @@ export function OverlayApp() {
       const fontSize = clampFontSize(
         current?.fontSize ?? textFontSize(strokeWidth),
       );
-      const lineHeight = Math.round(
-        fontSize * TEXT_BUBBLE.lineHeightRatio,
-      );
+      const lineHeight = Math.round(fontSize * TEXT_BUBBLE.lineHeightRatio);
 
       const container = document.createElement("div");
       container.className = "text-composer";
@@ -981,10 +1089,7 @@ export function OverlayApp() {
           const len = Math.hypot(dxc, dyc) || 1;
           const bend = Math.max(
             -300,
-            Math.min(
-              300,
-              ((point.x - mx) * -dyc + (point.y - my) * dxc) / len,
-            ),
+            Math.min(300, ((point.x - mx) * -dyc + (point.y - my) * dxc) / len),
           );
           const preview = { ...src, bend };
           clearLive();
@@ -995,7 +1100,11 @@ export function OverlayApp() {
         }
         const preview =
           selectionDrag.kind === "resize"
-            ? resizeAnnotation(selectionDrag.object, selectionDrag.handle, point)
+            ? resizeAnnotation(
+                selectionDrag.object,
+                selectionDrag.handle,
+                point,
+              )
             : translateAnnotation(selectionDrag.object, dx, dy);
         clearLive();
         drawAnnotation(liveCanvas.getContext("2d")!, preview);
@@ -1149,10 +1258,7 @@ export function OverlayApp() {
           const len = Math.hypot(dxc, dyc) || 1;
           const bend = Math.max(
             -300,
-            Math.min(
-              300,
-              ((point.x - mx) * -dyc + (point.y - my) * dxc) / len,
-            ),
+            Math.min(300, ((point.x - mx) * -dyc + (point.y - my) * dxc) / len),
           );
           updated = { ...src, bend };
         } else if (selectionDrag.kind === "resize") {
@@ -1375,6 +1481,31 @@ export function OverlayApp() {
     setStatusText("Duplicated");
   }, [objects, selectedId, makeId, commit]);
 
+  /**
+   * Remove the selected annotation. Undoable, and the selection is cleared so
+   * the header's Duplicate/Delete controls disappear with the object.
+   *
+   * `objectsRef` is updated in the same step as the state, matching the other
+   * mutation paths: the text composer's blur handler and PNG export both read
+   * the ref and must not observe a pre-delete list.
+   */
+  const deleteSelected = useCallback(() => {
+    // Flush an open composer first, so deleting a note that is being edited
+    // cannot leave the composer attached to a now-missing object.
+    commitTextInput();
+    const id = selectedId;
+    if (!id) return;
+    const current = objectsRef.current;
+    const next = current.filter((object) => object.id !== id);
+    if (next.length === current.length) return;
+    objectsRef.current = next;
+    setPast((pastStates) => [...pastStates, current].slice(-HISTORY_LIMIT));
+    setFuture([]);
+    setObjects(next);
+    setSelectedId(null);
+    setStatusText("Deleted");
+  }, [commitTextInput, selectedId]);
+
   const startTimer = useCallback((minutes: number) => {
     setSeconds(minutes * 60);
     setTimerOn(true);
@@ -1409,14 +1540,49 @@ export function OverlayApp() {
     setUiView("chooser");
   }, [commitTextInput]);
 
+  /**
+   * Export the visible tab with annotations burned in.
+   *
+   * ORDERING IS LOAD-BEARING, for the same reason it is in `startRecording`:
+   * a capture must never see Capann's own UI.
+   *
+   *   1. hide the shadow host synchronously
+   *   2. wait two animation frames so the compositor paints it hidden
+   *   3. capture the tab        -> pixels contain the page only
+   *   4. restore the host       -> composition no longer needs the DOM
+   *   5. draw each annotation once onto the screenshot
+   *
+   * Step 5 is why step 1 exists. If the overlay is still visible when
+   * `capture-visible-tab` runs, the screenshot already contains the rendered
+   * objects and step 5 doubles every stroke, arrowhead, and outline.
+   *
+   * The hide is deliberately local (host style) rather than reusing
+   * `captureHidden`: that flag belongs to the recorder's lifecycle and must
+   * survive this function unchanged. Sharing it is exactly what broke export
+   * before — see the fusion note at the top of this file.
+   */
   const savePng = useCallback(async () => {
+    if (savingPngRef.current) return;
+    savingPngRef.current = true;
+
     // Flush an open note first so the export contains the committed bubble
     // rather than the DOM composer.
     commitTextInput();
     setStatusText("Capturing...");
+
+    const host =
+      shadowRoot?.host instanceof HTMLElement ? shadowRoot.host : null;
+    // Restore to whatever the recorder currently wants — not blindly visible.
+    const restoreHost = () => {
+      if (host) host.style.visibility = captureHidden ? "hidden" : "visible";
+    };
+
+    // Hide before the paint. The click handler runs before React commits, and
+    // `capture-visible-tab` reads whatever is currently on screen, so a state
+    // update alone is one frame too late.
     try {
-      // Let the browser finish a compositor frame before capture so the PNG
-      // matches what was on screen when the user asked to save.
+      if (host) host.style.visibility = "hidden";
+
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
@@ -1424,6 +1590,10 @@ export function OverlayApp() {
       const response = (await chrome.runtime.sendMessage({
         kind: "capture-visible-tab",
       } satisfies ContentToBackgroundMessage)) as CaptureVisibleTabResponse;
+
+      // Pixels are captured. Bring the UI back before the slower compose step
+      // so the user is not left staring at a blank tab while it encodes.
+      restoreHost();
 
       if (response.kind === "capture-visible-tab-error") {
         setStatusText(`Save failed: ${response.error}`);
@@ -1439,6 +1609,8 @@ export function OverlayApp() {
       const ctx = composite.getContext("2d")!;
       ctx.drawImage(screenshot, 0, 0, composite.width, composite.height);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Exactly once. The screenshot above is annotation-free by construction;
+      // drawing here a second time would duplicate every object.
       for (const obj of objectsRef.current) drawAnnotation(ctx, obj);
 
       const dataUrl = composite.toDataURL("image/png");
@@ -1452,8 +1624,11 @@ export function OverlayApp() {
     } catch (err) {
       setStatusText("Save failed");
       console.error("[Capann] save failed", err);
+    } finally {
+      restoreHost();
+      savingPngRef.current = false;
     }
-  }, [commitTextInput]);
+  }, [commitTextInput, captureHidden, shadowRoot]);
 
   const handleToolChange = useCallback(
     (newTool: ToolId) => {
@@ -1549,11 +1724,7 @@ export function OverlayApp() {
     }
     // Re-enable the button if the window was closed without a decision.
     window.setTimeout(() => setPermissionRequested(false), 1_500);
-  }, [
-    permissionRequested,
-    recordOptions.camera,
-    recordOptions.microphone,
-  ]);
+  }, [permissionRequested, recordOptions.camera, recordOptions.microphone]);
 
   const startRecording = useCallback(async () => {
     if (startRequested) return;
@@ -1641,8 +1812,14 @@ export function OverlayApp() {
     void init();
   }, []);
 
-  // Keep the entire shadow-root host out of tabCapture frames during recording,
-  // including canvases, shell, and any active text input.
+  // Recording's single source of truth for overlay visibility. Hiding the
+  // shadow-root host hides everything at once: canvases, shell, timer/mask
+  // chips, and any active text input.
+  //
+  // PNG export deliberately bypasses this effect: it toggles the same host
+  // style for one capture and restores it from `captureHidden` afterwards.
+  // Do not move export onto this effect unless it can also preserve the
+  // recorder's desired state.
   useEffect(() => {
     if (shadowRoot?.host instanceof HTMLElement) {
       shadowRoot.host.style.visibility = captureHidden ? "hidden" : "visible";
@@ -1731,13 +1908,31 @@ export function OverlayApp() {
     };
   }, [drawModeEnabled, tool]);
 
-  // Handle Escape (exit draw mode, keep marks) and Ctrl/Cmd+D (duplicate).
-  // Esc never clears annotations or closes the panel — it only returns
-  // pointer events to the page. Ctrl+D is handled in-page (not a manifest
-  // command) because Chrome reserves it for bookmarks; preventDefault stops
-  // the bookmark tab from opening. Meta+D covers macOS.
+  // Handle Escape (exit draw mode, keep marks), Ctrl/Cmd+D (duplicate), and
+  // Delete/Backspace (delete selected). Esc never clears annotations or closes
+  // the panel — it only returns pointer events to the page. Ctrl+D is handled
+  // in-page (not a manifest command) because Chrome reserves it for bookmarks;
+  // preventDefault stops the bookmark tab from opening. Meta+D covers macOS.
+  //
+  // The `!captureHidden` guard matters: while the overlay is hidden for a
+  // recording the user cannot see draw mode, so Escape must not silently
+  // change it behind their back.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // The text composer owns the keyboard while it is open. Checking the
+      // shadow root's activeElement is required because events crossing the
+      // shadow boundary are retargeted to the host — `e.target` cannot reveal
+      // that the user is typing inside the composer, so a bare Backspace would
+      // otherwise delete an annotation instead of a character.
+      const focused = shadowRoot?.activeElement as HTMLElement | null;
+      const typing =
+        editorRef.current !== null ||
+        (focused !== null &&
+          (focused.tagName === "INPUT" ||
+            focused.tagName === "TEXTAREA" ||
+            focused.isContentEditable));
+      if (typing) return;
+
       if (e.key === "Escape" && drawModeEnabled && !captureHidden)
         setDrawModeEnabled(false);
       if (
@@ -1749,14 +1944,38 @@ export function OverlayApp() {
         e.preventDefault();
         duplicateSelected();
       }
+      // Windows labels the key "Delete"; Mac labels Backspace as "delete".
+      // Requiring draw mode keeps plain Backspace navigation working whenever
+      // annotations are merely on screen rather than being edited.
+      if (
+        (e.key === "Delete" || e.key === "Backspace") &&
+        drawModeEnabled &&
+        !captureHidden &&
+        selectedId
+      ) {
+        e.preventDefault();
+        deleteSelected();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [drawModeEnabled, captureHidden, duplicateSelected]);
+  }, [
+    drawModeEnabled,
+    captureHidden,
+    duplicateSelected,
+    deleteSelected,
+    selectedId,
+    shadowRoot,
+  ]);
 
   // Handle extension action, keyboard, and recorder status messages.
   // Alt+Shift+S (toggle-capann-ui) only toggles draw mode while the panel
   // is open; when closed it opens the chooser. It never closes the panel.
+  //
+  // This listener is a fusion seam: annotation commands (toggle-capann-ui,
+  // clear-annotations, cycle-tool) and recorder lifecycle (recording-*) arrive
+  // on the same channel. A new case must not assume the other domain's state,
+  // and `recording-status` stays the only writer of `captureHidden` here.
   useEffect(() => {
     const handleMessage = (message: BackgroundToContentMessage) => {
       switch (message.kind) {
@@ -1828,11 +2047,18 @@ export function OverlayApp() {
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, [handleClear, cycleTool, uiView, drawModeEnabled, handleDrawModeToggle]);
 
+  // Recording-driven hide, applied to the rendered subtree so React state and
+  // the host style above cannot disagree. `savePng` does not go through this:
+  // it hides the host for one capture and restores it, without touching this
+  // flag.
   const hiddenByCapture = captureHidden
     ? { visibility: "hidden" as const }
     : undefined;
   const closeUi = () => {
     setUiView("closed");
+    // Closing is the reset point: the panel returns to its docked corner the
+    // next time it opens.
+    setPanelPosition(null);
     handleDrawModeToggle(false);
   };
   const recordingIsActive =
@@ -1879,101 +2105,36 @@ export function OverlayApp() {
     });
   };
 
-  // Annotate undo/redo/duplicate live in the shared shell header.
-  // Duplicate only shows when an annotation is selected (which includes
-  // right after drawing, since new marks auto-select).
+  // Annotate undo/redo/duplicate/delete live in the shared shell header.
+  // Duplicate and Delete only show when an annotation is selected (which
+  // includes right after drawing, since new marks auto-select).
   const annotateActions = (
     <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
-      <button
-        onClick={() => handleUndo()}
+      <HeaderIcon
         title="Undo"
-        style={{
-          width: "26px",
-          height: "26px",
-          borderRadius: "12px",
-          background: "transparent",
-          border: "none",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: past.length > 0 ? "pointer" : "default",
-        }}
-        onMouseEnter={(e) =>
-          past.length > 0 && (e.currentTarget.style.background = "#26262B")
-        }
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path
-            d={UNDO_ICON}
-            stroke={past.length > 0 ? "#F5F5F7" : "rgba(139,139,147,0.45)"}
-            strokeWidth="1.7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-      <button
-        onClick={() => handleRedo()}
+        path={UNDO_ICON}
+        onClick={handleUndo}
+        disabled={past.length === 0}
+      />
+      <HeaderIcon
         title="Redo"
-        style={{
-          width: "26px",
-          height: "26px",
-          borderRadius: "12px",
-          background: "transparent",
-          border: "none",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: future.length > 0 ? "pointer" : "default",
-        }}
-        onMouseEnter={(e) =>
-          future.length > 0 && (e.currentTarget.style.background = "#26262B")
-        }
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path
-            d={REDO_ICON}
-            stroke={future.length > 0 ? "#F5F5F7" : "rgba(139,139,147,0.45)"}
-            strokeWidth="1.7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+        path={REDO_ICON}
+        onClick={handleRedo}
+        disabled={future.length === 0}
+      />
       {selectedId && (
-        <button
-          onClick={() => duplicateSelected()}
-          title="Duplicate selected (Ctrl+D)"
-          style={{
-            width: "26px",
-            height: "26px",
-            borderRadius: "12px",
-            background: "transparent",
-            border: "none",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-          }}
-          onMouseEnter={(e) =>
-            (e.currentTarget.style.background = "#26262B")
-          }
-          onMouseLeave={(e) =>
-            (e.currentTarget.style.background = "transparent")
-          }
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path
-              d={DUPLICATE_ICON}
-              stroke="#F5F5F7"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+        <>
+          <HeaderIcon
+            title="Duplicate selected (Ctrl/Cmd+D)"
+            path={DUPLICATE_ICON}
+            onClick={duplicateSelected}
+          />
+          <HeaderIcon
+            title="Delete selected (Delete or Backspace)"
+            path={DELETE_ICON}
+            onClick={deleteSelected}
+          />
+        </>
       )}
     </div>
   );
@@ -2089,36 +2250,21 @@ export function OverlayApp() {
             showBack={false}
             onBack={goBackToChooser}
             onClose={closeUi}
+            position={panelPosition}
+            onPositionChange={setPanelPosition}
           >
             <div style={{ display: "grid", gap: 8 }}>
-              <button
-                onClick={() => {
-                  setStatusText("");
-                  setRecordingStatus({ state: "idle" });
-                  setUiView("record");
-                }}
-                style={{ ...SHELL_BUTTON, textAlign: "left" }}
-              >
-                <b>●　Record</b>
-                <span
-                  style={{
-                    display: "block",
-                    margin: "5px 0 0 24px",
-                    color: "#8B8B93",
-                    fontSize: 11,
-                  }}
-                >
-                  Capture this tab with camera and audio
-                </span>
-              </button>
-              <button
+               <button
                 onClick={() => {
                   setUiView("annotate");
                   handleDrawModeToggle(false);
                 }}
                 style={{ ...SHELL_BUTTON, textAlign: "left" }}
               >
-                <b>✎　Annotate</b>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <MarkerCircleIcon size={20} weight="fill" />
+                  <span>Annotate</span>
+                </div>
                 <span
                   style={{
                     display: "block",
@@ -2128,6 +2274,30 @@ export function OverlayApp() {
                   }}
                 >
                   Draw and mark up this tab
+                </span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setStatusText("");
+                  setRecordingStatus({ state: "idle" });
+                  setUiView("record");
+                }}
+                style={{ ...SHELL_BUTTON, textAlign: "left" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <RecordIcon size={20} weight="fill" />
+                  <span>Record</span>
+                </div>
+                <span
+                  style={{
+                    display: "block",
+                    margin: "5px 0 0 24px",
+                    color: "#8B8B93",
+                    fontSize: 11,
+                  }}
+                >
+                  Capture this tab with camera and audio
                 </span>
               </button>
             </div>
@@ -2144,6 +2314,8 @@ export function OverlayApp() {
             onBack={goBackToChooser}
             onClose={closeUi}
             actions={annotateActions}
+            position={panelPosition}
+            onPositionChange={setPanelPosition}
           >
             <AnnotateControls
               onToolChange={handleToolChange}
@@ -2177,6 +2349,8 @@ export function OverlayApp() {
             showBack={!recordingIsActive}
             onBack={goBackToChooser}
             onClose={closeUi}
+            position={panelPosition}
+            onPositionChange={setPanelPosition}
           >
             <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
               Capann's UI and annotations are hidden from the saved video.
@@ -2248,9 +2422,7 @@ export function OverlayApp() {
             {!recordingIsActive && (
               <button
                 onClick={() => void startRecording()}
-                disabled={
-                  recorderPreparation === "preparing" || startRequested
-                }
+                disabled={recorderPreparation === "preparing" || startRequested}
                 style={{
                   ...SHELL_BUTTON,
                   width: "100%",
@@ -2274,8 +2446,8 @@ export function OverlayApp() {
                   : startRequested
                     ? "Starting recording…"
                     : recorderPreparation === "failed"
-                    ? "Try preparing recorder again"
-                    : "Start recording"}
+                      ? "Try preparing recorder again"
+                      : "Start recording"}
               </button>
             )}
             {recorderPreparation === "failed" && !recordingIsActive && (
@@ -2286,7 +2458,10 @@ export function OverlayApp() {
             {recordingStatus.state === "starting" && (
               <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>
                 {(() => {
-                  const s = recordingStatus as { stage?: string; sessionId?: string };
+                  const s = recordingStatus as {
+                    stage?: string;
+                    sessionId?: string;
+                  };
                   switch (s.stage) {
                     case "preparing-recorder":
                       return "Preparing recorder…";
@@ -2433,7 +2608,7 @@ export function OverlayApp() {
                 alignItems: "center",
                 gap: 0,
                 height: "34px",
-                padding: 0,
+                padding: "0 6px 0 12px",
                 borderRadius: "999px",
                 backdropFilter: "blur(20px)",
                 WebkitBackdropFilter: "blur(20px)",
@@ -2456,7 +2631,7 @@ export function OverlayApp() {
                   alignItems: "center",
                   gap: "8px",
                   height: "34px",
-                  padding: "0 0 0 14px",
+                  // padding: "0 0 0 14px",
                   border: "none",
                   borderRadius: "999px 0 0 999px",
                   cursor: "pointer",
@@ -2486,13 +2661,13 @@ export function OverlayApp() {
                 title="Close screen mask"
                 aria-label="Close screen mask"
                 style={{
-                  height: "34px",
-                  width: "32px",
-                  border: "none",
-                  borderRadius: "0 999px 999px 0",
+                  width: "22px",
+                  height: "22px",
+                  borderRadius: "999px",
                   background: "transparent",
+                  border: "none",
                   color: "#8B8B93",
-                  font: "400 16px/1 Manrope,system-ui,sans-serif",
+                  font: "400 14px/1 Manrope,system-ui,sans-serif",
                   cursor: "pointer",
                 }}
                 onMouseEnter={(e) => {

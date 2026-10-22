@@ -726,6 +726,9 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
     if (message.kind === "capture-visible-tab") {
+      // Contract: the content script hides #capann-host before sending this,
+      // so the returned pixels contain the page only. The worker must not
+      // composite annotations — export draws them client-side, exactly once.
       const callback = (dataUrl: string) => {
         if (chrome.runtime.lastError || !dataUrl) {
           sendResponse({
@@ -833,6 +836,10 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
+// Fusion seam: every shortcut means one thing while idle and another while a
+// recording is active. When adding a command, handle both halves here — a
+// command that falls through to the annotation branch during a recording would
+// act on a tab whose overlay is deliberately hidden.
 chrome.commands.onCommand.addListener((command) => {
   if (
     recordingActive &&

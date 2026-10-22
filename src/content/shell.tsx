@@ -4,10 +4,23 @@
  * Shared Capann panel shell. Record and Annotate render as sibling views
  * inside this shell, so both share the same location, header, Back/Close
  * behavior, and drag-to-reposition.
+ *
+ * The drag position is CONTROLLED by the parent. Because each view mounts its
+ * own `CapannShell`, internal position state would be discarded whenever the
+ * user switches between the chooser, Annotate, and Record, snapping the panel
+ * back to its docked corner. The parent holds one position for all three and
+ * clears it when the panel closes.
  */
 
-import { useRef, useState } from "react";
+import { DotsSixIcon } from "@phosphor-icons/react";
+import { useRef } from "react";
 import type { ReactNode } from "react";
+
+/** Explicit top/left once the panel has been dragged; null = docked top-right. */
+export interface ShellPosition {
+  top: number;
+  left: number;
+}
 
 export const SHELL_BUTTON: React.CSSProperties = {
   border: "1px solid rgba(255,255,255,.1)",
@@ -34,6 +47,13 @@ export interface CapannShellProps {
   onClose: () => void;
   /** Mode-specific header controls, e.g. Annotate undo/redo. */
   actions?: ReactNode;
+  /**
+   * Controlled drag position. Owned by the parent because Annotate, Record,
+   * and the chooser are three different shell instances: internal state here
+   * would be thrown away on every view switch and snap the panel home.
+   */
+  position: ShellPosition | null;
+  onPositionChange: (position: ShellPosition) => void;
   children: ReactNode;
 }
 
@@ -51,14 +71,11 @@ export function CapannShell({
   onBack,
   onClose,
   actions,
+  position,
+  onPositionChange,
   children,
 }: CapannShellProps) {
   const panelRef = useRef<HTMLElement>(null);
-  // Null = docked top-right. A drag pins the panel to explicit top/left.
-  const [position, setPosition] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
   const onHeaderPointerDown = (e: React.PointerEvent) => {
@@ -87,7 +104,7 @@ export function CapannShell({
       Math.max(0, drag.origTop + e.clientY - drag.startY),
       Math.max(0, window.innerHeight - 80),
     );
-    setPosition({ top, left });
+    onPositionChange({ top, left });
   };
 
   const onHeaderPointerUp = () => {
@@ -106,7 +123,7 @@ export function CapannShell({
         zIndex: 2147483647,
         boxSizing: "border-box",
         width: "min(280px, calc(100vw - 32px))",
-        padding: "16px",
+        padding: "0 16px 16px 16px",
         borderRadius: "24px",
         background: "rgba(28,28,32,0.88)",
         color: "#F5F5F7",
@@ -128,10 +145,12 @@ export function CapannShell({
           alignItems: "center",
           gap: 10,
           marginBottom: 12,
-          cursor: "grab",
           touchAction: "none",
         }}
       >
+        <div style={{ width: "100%",   cursor: "grab", textAlign: "center" }}>
+          <DotsSixIcon size={25} />
+        </div>
         <div
           style={{
             display: "flex",
