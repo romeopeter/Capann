@@ -559,13 +559,18 @@ async function startRecording(
       () => undefined,
     );
 
+    // List the fields explicitly. A spread here would carry any extra runtime
+    // property (notably `kind`) over the discriminated union and make the
+    // recorder ignore the command.
     const response = await sendOffscreenCommand({
       kind: "offscreen-start",
       sessionId,
       streamId,
       tabId,
       target: "offscreen",
-      ...options,
+      camera: options.camera,
+      microphone: options.microphone,
+      tabAudio: options.tabAudio,
     });
 
     if (!response.ok) {
@@ -766,7 +771,18 @@ chrome.runtime.onMessage.addListener(
         });
         return false;
       }
-      void startRecording(message, tabId, sendResponse);
+      // Pass only the three toggles. `message` is the whole record-start
+      // envelope, so forwarding it would let its `kind: "record-start"` leak
+      // into the offscreen command and overwrite `kind: "offscreen-start"`.
+      void startRecording(
+        {
+          camera: message.camera,
+          microphone: message.microphone,
+          tabAudio: message.tabAudio,
+        },
+        tabId,
+        sendResponse,
+      );
       return true;
     }
     if (message.kind === "record-status") {

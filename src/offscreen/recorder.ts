@@ -636,7 +636,13 @@ function handleRecorderCommand(
     if (recorder && recorder.state !== "inactive") recorder.stop();
     else void finalize(true);
     respond(sendResponse, true);
+    return;
   }
+
+  // The target matched but no command did (for example a message whose `kind`
+  // was overwritten in transit). Answer explicitly instead of holding the
+  // worker's response channel open until its timeout fires.
+  respond(sendResponse, false, "RECORDER_STARTUP_FAILED");
 }
 
 chrome.runtime.onMessage.addListener(
