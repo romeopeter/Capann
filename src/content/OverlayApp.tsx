@@ -19,16 +19,21 @@
  * The overlap is small and specific. Keep it that way:
  *
  * - `captureHidden` belongs to the recorder. It means "a capture may be
- *   running, keep the overlay out of the frames," and only recording status
- *   writes it.
+ *   running, keep the annotation overlay out of the frames," and only
+ *   recording status writes it.
  * - PNG export needs the SAME effect (the overlay must be off screen before a
  *   screenshot) but must NOT reuse `captureHidden`, because export is a
  *   one-shot hide that has to restore to whatever the recorder currently wants.
  *   `savePng` therefore hides the shadow host directly and restores from
  *   `captureHidden`.
- * - The shadow host is the only sanctioned way to make Capann invisible to a
- *   capture. Hiding it hides everything: canvases, shell, timer/mask chips,
- *   and any open text composer.
+ * - The recording chip is the one deliberate exception. `recording-chip.tsx`
+ *   mounts in a sibling host (`#capann-recording-host`) and is intentionally
+ *   visible in the capture: the presenter needs its timer, pause/stop/discard
+ *   controls, and the bottom-right camera bubble. Never route it through
+ *   `captureHidden`.
+ * - For the annotation overlay, the shadow host is the only sanctioned way to
+ *   make Capann invisible to a capture. Hiding it hides everything: canvases,
+ *   shell, timer/mask chips, and any open text composer.
  *
  * If a change removes the hide step from ANY capture path, that path starts
  * screenshotting its own annotations and the PNG gains a doubled copy of every
@@ -211,6 +216,88 @@ function HeaderIcon({
           strokeLinejoin="round"
         />
       </svg>
+    </button>
+  );
+}
+
+/**
+ * Record-view option switch. The native checkbox rendered a checkmark and
+ * looked out of place beside the shell's pill controls, so the row itself is
+ * the switch: clicking anywhere on it flips the option, while `role="switch"`
+ * keeps the checked state announced to assistive technology.
+ */
+function RecordOptionToggle({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  // Keep the shared design-token motion values here rather than inventing a
+  // slower toggle animation: 180ms / cubic-bezier(0.2, 0.8, 0.2, 1).
+  const motion = "180ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className="record-option-toggle"
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        width: "100%",
+        padding: 0,
+        background: "transparent",
+        border: "none",
+        color: disabled ? "#66666F" : "#F5F5F7",
+        font: "inherit",
+        fontSize: 13,
+        textAlign: "left",
+        cursor: disabled ? "default" : "pointer",
+      }}
+    >
+      <span>{label}</span>
+      <span
+        aria-hidden="true"
+        data-record-toggle-track
+        style={{
+          position: "relative",
+          flex: "0 0 auto",
+          boxSizing: "border-box",
+          width: 34,
+          height: 20,
+          border: `1px solid ${
+            checked ? "#A78BFA" : "rgba(255,255,255,0.18)"
+          }`,
+          borderRadius: 999,
+          background: checked ? "#A78BFA" : "rgba(255,255,255,0.14)",
+          opacity: disabled ? 0.5 : 1,
+          transition: `background-color ${motion}, border-color ${motion}, opacity ${motion}`,
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            left: 2,
+            width: 14,
+            height: 14,
+            borderRadius: 999,
+            background: checked ? "#17131F" : "#F5F5F7",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.3)",
+            transform: `translateX(${checked ? 14 : 0}px)`,
+            transition: `transform ${motion}, background-color ${motion}`,
+          }}
+        />
+      </span>
     </button>
   );
 }
@@ -2154,6 +2241,11 @@ export function OverlayApp() {
           width: 100%;
           height: 100%;
         }
+        .record-option-toggle:focus-visible {
+          outline: 2px solid #A78BFA;
+          outline-offset: 3px;
+          border-radius: 8px;
+        }
         .text-composer {
           position: fixed;
           z-index: 2147483647;
@@ -2363,28 +2455,18 @@ export function OverlayApp() {
                   ["Tab audio", "tabAudio"],
                 ] as const
               ).map(([label, key]) => (
-                <label
+                <RecordOptionToggle
                   key={key}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    color: recordingIsActive ? "#66666F" : "#F5F5F7",
-                  }}
-                >
-                  {label}
-                  <input
-                    type="checkbox"
-                    checked={recordOptions[key]}
-                    disabled={recordingIsActive}
-                    onChange={(event) =>
-                      setRecordOptions((options) => ({
-                        ...options,
-                        [key]: event.target.checked,
-                      }))
-                    }
-                  />
-                </label>
+                  label={label}
+                  checked={recordOptions[key]}
+                  disabled={recordingIsActive}
+                  onChange={(checked) =>
+                    setRecordOptions((options) => ({
+                      ...options,
+                      [key]: checked,
+                    }))
+                  }
+                />
               ))}
             </div>
             {missingPermissions.length > 0 && !recordingIsActive && (

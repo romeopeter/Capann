@@ -27,7 +27,6 @@ let audioContext: AudioContext | null = null;
 let frameTimer = 0;
 let activeTabVideo: HTMLVideoElement | null = null;
 let statusTimer = 0;
-let startedAt = 0;
 let accumulatedMs = 0;
 let activeStart = 0;
 let discardRequested = false;
@@ -109,9 +108,15 @@ function currentStatus(paused = false): RecordingStatus {
     sessionId: currentSessionId!,
   };
   if (paused) return { state: "paused", elapsedMs: accumulatedMs, ...flags };
+  // `startedAt` is a timestamp on the same clock as the chip's Date.now(),
+  // shifted back by every active millisecond. Do not use the raw wall-clock
+  // start: that would count paused time. Also do not rebuild this from
+  // `accumulatedMs` alone on every tick — that would push the timestamp
+  // forward once per second and make the chip's elapsed time appear frozen.
+  const elapsedMs = accumulatedMs + (performance.now() - activeStart);
   return {
     state: "recording",
-    startedAt: Date.now() - accumulatedMs,
+    startedAt: Date.now() - elapsedMs,
     ...flags,
   };
 }
@@ -291,56 +296,61 @@ async function start(message: StartMessage): Promise<void> {
     cameraVideo.muted = true;
     cameraVideo.playsInline = true;
     cameraVideo.srcObject = cameraStream;
-    // The bubble is optional; never let its playback hold up startup.
+    // The preview is optional; never let its playback hold up startup.
     await withTimeout(
       cameraVideo.play(),
       3_000,
       "The camera video did not start in time.",
     ).catch(() => undefined);
   }
+  // The camera bubble now lives in the page's recording chip, not in this
+  // compositor. Because the chip is part of the tab, the bubble is recorded
+  // exactly where the presenter sees it (bottom right, circular), and the
+  // video no longer gets a second bubble. This loop only streams small preview
+  // frames to the chip; the chip owns the bubble's size, border, and position.
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = 480;
+  previewCanvas.height = 270;
+  const previewCtx = previewCanvas.getContext("2d");
+  let lastPreviewAt = 0;
   const draw = () => {
     ctx.drawImage(video, 0, 0, width, height);
-    if (cameraStream && cameraVideo.videoWidth) {
-      const bubbleWidth = Math.round(width * 0.24);
-      const bubbleHeight = Math.round((bubbleWidth * 9) / 16);
-      const margin = Math.round(width * 0.025);
-      const x = width - bubbleWidth - margin;
-      const y = height - bubbleHeight - margin;
-      const radius = Math.round(bubbleHeight * 0.12);
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(x, y, bubbleWidth, bubbleHeight, radius);
-      ctx.clip();
-      const sourceRatio = cameraVideo.videoWidth / cameraVideo.videoHeight;
-      const boxRatio = 16 / 9;
-      const cropWidth =
-        sourceRatio > boxRatio
-          ? cameraVideo.videoHeight * boxRatio
-          : cameraVideo.videoWidth;
-      const cropHeight =
-        sourceRatio > boxRatio
-          ? cameraVideo.videoHeight
-          : cameraVideo.videoWidth / boxRatio;
-      ctx.drawImage(
-        cameraVideo,
-        (cameraVideo.videoWidth - cropWidth) / 2,
-        (cameraVideo.videoHeight - cropHeight) / 2,
-        cropWidth,
-        cropHeight,
-        x,
-        y,
-        bubbleWidth,
-        bubbleHeight,
-      );
-      ctx.restore();
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,.92)";
-      ctx.lineWidth = Math.max(2, width * 0.002);
-      ctx.beginPath();
-      ctx.roundRect(x, y, bubbleWidth, bubbleHeight, radius);
-      ctx.stroke();
-      ctx.restore();
-    }
+    if (!cameraStream || !cameraVideo.videoWidth || !previewCtx) return;
+    const now = performance.now();
+    if (now - lastPreviewAt < 66) return;
+    lastPreviewAt = now;
+    const sourceRatio = cameraVideo.videoWidth / cameraVideo.videoHeight;
+    const boxRatio = previewCanvas.width / previewCanvas.height;
+    const cropWidth =
+      sourceRatio > boxRatio
+        ? cameraVideo.videoHeight * boxRatio
+        : cameraVideo.videoWidth;
+    const cropHeight =
+      sourceRatio > boxRatio
+        ? cameraVideo.videoHeight
+        : cameraVideo.videoWidth / boxRatio;
+    previewCtx.drawImage(
+      cameraVideo,
+      (cameraVideo.videoWidth - cropWidth) / 2,
+      (cameraVideo.videoHeight - cropHeight) / 2,
+      cropWidth,
+      cropHeight,
+      0,
+      0,
+      previewCanvas.width,
+      previewCanvas.height,
+    );
+    const sessionId = currentSessionId;
+    if (!sessionId) return;
+    const dataUrl = previewCanvas.toDataURL("image/jpeg", 0.62);
+    void chrome.runtime
+      .sendMessage({
+        kind: "recorder-camera-frame",
+        sessionId,
+        dataUrl,
+        target: OFFSCREEN_TARGET,
+      })
+      .catch(() => undefined);
   };
   draw();
   // Offscreen documents are never rendered, so requestAnimationFrame does not
@@ -411,7 +421,6 @@ async function start(message: StartMessage): Promise<void> {
   recorder.onstop = () => {
     void finalize(discardRequested);
   };
-  startedAt = Date.now();
   activeStart = performance.now();
   accumulatedMs = 0;
 

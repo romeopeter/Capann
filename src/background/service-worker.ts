@@ -21,6 +21,9 @@ let recordingActive = false;
 let recordingPaused = false;
 let startInFlight = false;
 let stopRequested: "save" | "discard" | null = null;
+// One terminal command per recording. Without this, clicking Stop and then
+// Discard while the first command finalizes could turn a save into a discard.
+let stopCommandSent = false;
 let latestStatus: RecordingStatus = { state: "idle" };
 let currentSessionId: string | null = null;
 
@@ -371,6 +374,20 @@ async function sendRecorderCommand(
   } as BackgroundToRecorderMessage);
 }
 
+// Serialize the two terminal commands. A stop/discard clicked before the
+// recorder is live is remembered and delivered by the post-start check or the
+// first live status; once sent, later terminal commands are ignored.
+function requestStop(command: "save" | "discard"): void {
+  if (!recordingActive || stopCommandSent) return;
+  stopCommandSent = true;
+  if (latestStatus.state === "recording" || latestStatus.state === "paused") {
+    stopRequested = null;
+    void sendRecorderCommand(command === "save" ? "stop" : "discard");
+    return;
+  }
+  stopRequested = command;
+}
+
 function notifyRecordingTab(status: RecordingStatus): void {
   latestStatus = status;
   recordingPaused = status.state === "paused";
@@ -388,6 +405,7 @@ function notifyRecordingTab(status: RecordingStatus): void {
     recordingActive = false;
     recordingPaused = false;
     stopRequested = null;
+    stopCommandSent = false;
     recordingTabId = null;
     currentSessionId = null;
     // Close the offscreen document only after the recording fully finalizes.
@@ -525,6 +543,8 @@ async function startRecording(
     return;
   }
   startInFlight = true;
+  stopRequested = null;
+  stopCommandSent = false;
 
   const sessionId = makeSessionId();
   currentSessionId = sessionId;
@@ -583,6 +603,7 @@ async function startRecording(
 
     if (stopRequested) {
       const command = stopRequested;
+      stopRequested = null;
       void sendRecorderCommand(command === "save" ? "stop" : "discard");
     }
   } catch (error) {
@@ -608,6 +629,7 @@ async function startRecording(
     recordingActive = false;
     recordingPaused = false;
     stopRequested = null;
+    stopCommandSent = false;
     latestStatus = status;
     updateActionBadge(status);
     // Stop accepting status from this session, then restore the UI before
@@ -630,8 +652,7 @@ async function startRecording(
 
 function handleActionInvocation(tab?: chrome.tabs.Tab): void {
   if (recordingActive) {
-    stopRequested = "save";
-    if (recordingTabId !== null) void sendRecorderCommand("stop");
+    requestStop("save");
     return;
   }
   if (tab?.id === undefined) return;
@@ -785,6 +806,23 @@ chrome.runtime.onMessage.addListener(
       );
       return true;
     }
+    if (message.kind === "record-pause" || message.kind === "record-resume") {
+      // The chip targets states, not a toggle: a double click must not bounce
+      // the recorder out of the state the presenter asked for.
+      if (!recordingActive) return false;
+      if (latestStatus.state !== "recording" && latestStatus.state !== "paused")
+        return false;
+      const paused = message.kind === "record-pause";
+      if (recordingPaused !== paused) {
+        recordingPaused = paused;
+        void sendRecorderCommand(paused ? "pause" : "resume");
+      }
+      return false;
+    }
+    if (message.kind === "record-stop" || message.kind === "record-discard") {
+      requestStop(message.kind === "record-stop" ? "save" : "discard");
+      return false;
+    }
     if (message.kind === "record-status") {
       // Ignore status from any session other than the current one, including
       // late messages after a session was abandoned, so a stale
@@ -796,7 +834,37 @@ chrome.runtime.onMessage.addListener(
       ) {
         return false;
       }
+      // Second delivery point for a stop/discard clicked during startup: if it
+      // landed after `startRecording`'s post-start check, the first live status
+      // still honors it. Clear as soon as it is sent so a late status cannot
+      // turn a save into a discard.
+      if (
+        (message.status.state === "recording" ||
+          message.status.state === "paused") &&
+        stopRequested
+      ) {
+        const command = stopRequested;
+        stopRequested = null;
+        void sendRecorderCommand(command === "save" ? "stop" : "discard");
+      }
       notifyRecordingTab(message.status);
+      return false;
+    }
+    if (message.kind === "recorder-camera-frame") {
+      // The page chip renders the camera bubble, so the recorder streams small
+      // preview frames instead of compositing its own bubble. Relay only while
+      // the frame belongs to the live session and the recording tab is known.
+      if (
+        message.sessionId === currentSessionId &&
+        recordingActive &&
+        recordingTabId !== null
+      ) {
+        void sendToTab(recordingTabId, {
+          kind: "camera-preview-frame",
+          sessionId: message.sessionId,
+          dataUrl: message.dataUrl,
+        }).catch(() => undefined);
+      }
       return false;
     }
     if (message.kind === "offscreen-progress") {
@@ -866,17 +934,8 @@ chrome.commands.onCommand.addListener((command) => {
     void sendRecorderCommand(recordingPaused ? "pause" : "resume");
     return;
   }
-  if (
-    recordingActive &&
-    command === "clear-annotations" &&
-    (latestStatus.state === "recording" || latestStatus.state === "paused")
-  ) {
-    stopRequested = "discard";
-    void sendRecorderCommand("discard");
-    return;
-  }
   if (recordingActive && command === "clear-annotations") {
-    stopRequested = "discard";
+    requestStop("discard");
     return;
   }
   if (command === "clear-annotations") {

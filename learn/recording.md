@@ -2,6 +2,8 @@
 
 Capann's recording UI is in the page overlay. The Chrome action opens the Record / Annotate chooser; choosing Record displays camera, microphone, and tab-audio options before capture. Those inputs are enabled by default when available.
 
+Once recording starts, the annotation overlay and panel disappear, but a compact recording chip stays on the left edge. It shows elapsed time, pause/resume, stop & save, discard, and a circular camera preview at the bottom right. The chip is a **separate shadow host** (`#capann-recording-host`) and is intentionally part of the tab capture, so it appears in the saved video. The annotation host (`#capann-host`) remains hidden for the whole capture.
+
 Capann records **the tab it is running on**. There is no source picker: Chrome's `desktopCapture` picker cannot be used from a service worker without a `targetTab`, and a `targetTab`-scoped stream cannot be consumed by the extension's offscreen document. Tab capture IDs from `tabCapture` are the supported route (Chrome 116+).
 
 ## Camera and microphone permission
@@ -17,14 +19,14 @@ A denied or dismissed grant never blocks recording: Start still works, the devic
 ## Capture flow
 
 1. When the Record view opens, `OverlayApp.tsx` sends `record-prewarm`. The service worker creates `offscreen.html` and waits for its `offscreen-ready` signal before enabling Start (`preparing-recorder`).
-2. On Start, `OverlayApp.tsx` commits active text, exits drawing mode, and synchronously hides the complete `#capann-host` before sending `record-start` in the same click.
+2. On Start, `OverlayApp.tsx` commits active text, exits drawing mode, and synchronously hides `#capann-host` (annotations, panel, timer/mask chips, and text composer) before sending `record-start` in the same click. The separate `#capann-recording-host` is not hidden: its chip and camera preview are meant to be recorded.
 3. The service worker:
    a. Confirms the recorder is ready. If it is not, it awaits readiness first, so the stream ID is minted only when something can redeem it (`preparing-recorder`).
-   b. Hides the host on the tab again as a safety net.
+   b. Hides the annotation host on the tab again as a safety net.
    c. Calls `chrome.tabCapture.getMediaStreamId({ targetTabId })` and then immediately sends the ID to the offscreen recorder, with no awaits in between (`acquiring-tab-stream`). IDs expire within seconds.
 4. The offscreen document (`src/offscreen/recorder.ts`):
    a. Redeems the ID with `getUserMedia()` using `chromeMediaSource: "tab"` constraints (`acquiring-tab-stream`).
-   b. Composes video with a rounded 16:9 camera bubble at lower right, mixes microphone audio with tab audio, and routes captured tab audio back to local playback (`preparing-video`). The compositor redraws on a 33ms timer: offscreen documents are never rendered, so `requestAnimationFrame` does not run and `requestVideoFrameCallback` is unreliable. Without that timer the canvas emits one frame, `MediaRecorder` never fires `onstart`, and startup times out.
+   b. Composes tab video and mixes microphone audio with tab audio, routing captured tab audio back to local playback (`preparing-video`). The camera bubble is **not** composited here; the recorder streams small preview frames (`recorder-camera-frame`) to the page chip, which crops them into a circular bubble at the bottom right. Because the chip is in the tab, the bubble is part of the capture and the video matches what the presenter sees — and there is exactly one bubble. Hovering the bubble reveals a size control that cycles S → M → L; M is the default. The compositor redraws on a 33ms timer: offscreen documents are never rendered, so `requestAnimationFrame` does not run and `requestVideoFrameCallback` is unreliable. Without that timer the canvas emits one frame, `MediaRecorder` never fires `onstart`, and startup times out.
    c. Creates `MediaRecorder`, waits for `onstart` before confirming startup (`starting-recorder`). Every startup await is bounded (tab stream 8s, camera/mic 6s in parallel, video 6s, audio 3s, recorder start 5s) so the worker always gets a response.
    d. Records WebM chunks in memory. On save, creates a Blob URL and sends `recorder-download-request` to the service worker. The service worker invokes `chrome.downloads.download`, reports saved/failed status, then instructs the recorder to release the Blob URL and close. Discard drops chunks without downloading.
 5. Recording state/chunks are temporary and do not survive a browser restart.
@@ -83,7 +85,13 @@ On any startup failure, the session is invalidated, acquired tracks are stopped,
 ## Controls and status
 
 - Open Capann through the Chrome action or `Alt+Shift+S` on the tab you want to record. That invocation is what grants `tabCapture` for the tab.
-- Start from the in-page Record view. Once recording starts, the page overlay stays hidden for the duration, even if its UI is dismissed or the tab navigates.
+- Start from the in-page Record view. Once recording starts, the annotation overlay stays hidden for the duration, even if its UI is dismissed or the tab navigates. The **recording chip** remains on the left edge with:
+  - elapsed active recording time and a pulsing record dot (violet while paused),
+  - pause / resume,
+  - stop & save,
+  - discard (trash).
+- The chip is rendered in `#capann-recording-host`, separate from `#capann-host`. It is intentionally part of the tab, so the chip and the bottom-right camera preview are recorded. The camera preview appears only when the camera option was on and the recorder got a camera stream. The bubble is circular; hovering it reveals a Phosphor expand control that cycles S → M → L (M by default), and the size is captured with the tab.
+- Elapsed time is active time, not wall-clock time: paused spans are excluded. The recorder emits a stable `startedAt` shifted by accumulated active time, and the chip ticks locally between one-second status updates.
 - The Chrome action badge/title shows recording or paused state. Click the action to stop and save.
 - `Alt+Shift+T` pauses or resumes while recording; otherwise it cycles the annotation tool.
 - `Alt+Shift+C` discards while recording; otherwise it clears annotations.
@@ -91,15 +99,16 @@ On any startup failure, the session is invalidated, acquired tracks are stopped,
 
 ## Code paths
 
-- `src/content/OverlayApp.tsx`: chooser, input options, overlay visibility, and user-facing status.
-- `src/shared/types.ts`: `RecordOptions`, `RecordingStatus`, `RecordingStage`, `RecordingErrorCode`, `MediaPermissionState`, and message contracts (`record-prewarm`, `record-permission-state`, `record-request-permission`, `permission-granted`, `recording-permission`, `record-start`, `offscreen-ping`, `offscreen-permission-state`, `offscreen-start`, `offscreen-progress`, `recorder-download-request`, `recorder-final-status`).
-- `src/background/service-worker.ts`: `tabCapture.getMediaStreamId`, offscreen lifecycle, typed `sendMessage` request/response, startup stage logging, failure mapping, action badge, shortcuts, download handling, status relay.
-- `src/offscreen/recorder.ts`: message listener (no persistent port), media acquisition, camera composition, audio mixing/playback, WebM chunks, progress reporting (`offscreen-progress`), download request, discard.
+- `src/content/OverlayApp.tsx`: chooser, input options, annotation-overlay visibility, and the Record view's status.
+- `src/content/recording-chip.tsx`: floating recording controls and the circular bottom-right camera preview. Mounted in `#capann-recording-host` by `overlay.tsx`, independent of `captureHidden`.
+- `src/shared/types.ts`: `RecordOptions`, `RecordingStatus`, `RecordingStage`, `RecordingErrorCode`, `MediaPermissionState`, and message contracts (`record-prewarm`, `record-permission-state`, `record-request-permission`, `permission-granted`, `recording-permission`, `record-start`, `record-pause`, `record-resume`, `record-stop`, `record-discard`, `camera-preview-frame`, `recorder-camera-frame`, `offscreen-ping`, `offscreen-permission-state`, `offscreen-start`, `offscreen-progress`, `recorder-download-request`, `recorder-final-status`).
+- `src/background/service-worker.ts`: `tabCapture.getMediaStreamId`, offscreen lifecycle, typed `sendMessage` request/response, startup stage logging, failure mapping, action badge, shortcuts, chip commands, camera-frame relay, download handling, status relay.
+- `src/offscreen/recorder.ts`: message listener (no persistent port), media acquisition, camera preview frame streaming, audio mixing/playback, WebM chunks, progress reporting (`offscreen-progress`), download request, discard.
 - `src/offscreen/offscreen.html`: offscreen document entry point. It loads `offscreen/recorder.js` as a classic script (the bundle is an IIFE), so the message listener registers as soon as the document parses.
 - `src/permissions/permissions.html` and `.ts`: the visible one-time camera/microphone grant page.
 - `scripts/build.mjs`: bundles the content overlay, offscreen recorder, and permission page, and copies both HTML entry points into `dist/`.
 
-When changing this flow, preserve the ordering above: ready offscreen → hide overlay → mint the tab stream ID → hand it over immediately. Keep recording data local and temporary, keep Capann's host hidden for all active capture states, and return a clear final status so the content script can restore the UI.
+When changing this flow, preserve the ordering above: ready offscreen → hide the annotation host → mint the tab stream ID → hand it over immediately. Keep recording data local and temporary, keep the annotation host hidden for all active capture states (the chip host is the deliberate exception), and return a clear final status so the content script can restore the UI.
 
 ## Browser limitations
 

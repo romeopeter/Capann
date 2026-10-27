@@ -10,8 +10,8 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 4. In Annotate mode, the bottom canvas renders saved annotations. The top canvas handles pointer input and transient previews such as the current stroke or selection handles. `shell.tsx` provides the draggable panel chrome (header, Back/Close, mode actions), and `annotate-controls.tsx` renders the tools, colors, and size controls inside it, sending changes through props.
 5. `chrome.storage.session` stores annotations under a key containing the current tab ID. The service worker coordinates screenshot capture and PNG downloads.
 6. In Record mode, the content script requests capture for its own tab. The service worker obtains a `tabCapture` stream ID and starts `src/offscreen/recorder.ts` in `src/offscreen/offscreen.html`.
-7. The offscreen recorder combines the tab video with an optional lower-right webcam bubble, mixes optional microphone and tab audio, and encodes WebM. Tab audio is also routed back to local playback.
-8. When capture is active, the content script hides the entire overlay host, including annotations, controls, and text input. The recorder continues if the page UI is dismissed or the user navigates within the tab. The Chrome action badge and title show recording state; clicking the action stops and saves.
+7. The offscreen recorder combines the tab video, mixes optional microphone and tab audio, and encodes WebM. The camera bubble is rendered by the page's recording chip at the bottom right (the recorder streams small preview frames to it), so it is part of the captured tab and the video matches what the presenter sees. Tab audio is also routed back to local playback.
+8. When capture is active, the content script hides `#capann-host`, including annotations, panel controls, and text input. A separate `#capann-recording-host` stays visible and is intentionally captured: it holds the recording chip (elapsed time, pause/resume, stop & save, discard) and the bottom-right camera preview. The recorder continues if the page UI is dismissed or the user navigates within the tab. The Chrome action badge and title show recording state; clicking the action stops and saves.
 
 ## Main code areas
 
@@ -20,6 +20,7 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 - `src/content/geometry.ts`: bounds, hit tests, and spatial transformations.
 - `src/content/render.ts`: drawing annotation data to a canvas.
 - `src/content/OverlayApp.tsx`: chooser and workflow views, state, input, history, and persistence.
+- `src/content/recording-chip.tsx`: floating recording chip and circular bottom-right camera preview, mounted in its own shadow host so it survives the annotation overlay's capture hide.
 - `src/content/shell.tsx`: shared draggable panel shell (header, Back/Close, position).
 - `src/content/annotate-controls.tsx`: annotation controls rendered inside the shell.
 - `src/content/text-bubble.ts`: text-bubble layout, wrapping, tails, and fonts.

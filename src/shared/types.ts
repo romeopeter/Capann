@@ -133,6 +133,7 @@ export type BackgroundToContentMessage =
   | { kind: "recording-status"; status: RecordingStatus }
   | { kind: "recording-prepare-hide" }
   | { kind: "recording-prepare-show" }
+  | { kind: "camera-preview-frame"; sessionId: string; dataUrl: string }
   | ({ kind: "recording-permission" } & MediaPermissionState);
 
 export type CaptureVisibleTabResponse =
@@ -151,6 +152,10 @@ export type ContentToBackgroundMessage =
     }
   | { kind: "capture-visible-tab" }
   | { kind: "download-png"; dataUrl: string; filename: string }
+  | { kind: "record-pause" }
+  | { kind: "record-resume" }
+  | { kind: "record-stop" }
+  | { kind: "record-discard" }
   | ({ kind: "record-start" } & RecordOptions);
 
 /** Worker-to-offscreen commands (typed request/response via sendMessage). */
@@ -174,6 +179,12 @@ export type RecorderToBackgroundMessage =
   | { kind: "offscreen-ready"; target: "offscreen" }
   | { kind: "offscreen-progress"; sessionId: string; stage: RecordingStage }
   | { kind: "record-status"; status: RecordingStatus }
+  | {
+      kind: "recorder-camera-frame";
+      sessionId: string;
+      dataUrl: string;
+      target: "offscreen";
+    }
   | { kind: "recorder-download-request"; blobUrl: string; filename: string; mimeType: string; sessionId: string }
   | { kind: "recorder-final-status"; status: RecordingStatus }
   | { kind: "offscreen-close"; target: "offscreen" }

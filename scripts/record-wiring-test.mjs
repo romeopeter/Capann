@@ -37,6 +37,7 @@ async function testWorker() {
   let onMessage = null;
   let contextsOpen = false;
   let offscreenCommand = null;
+  const tabMessages = [];
   const started = Date.now();
 
   const chrome = {
@@ -48,9 +49,9 @@ async function testWorker() {
       getContexts: async () => (contextsOpen ? [{ contextType: "OFFSCREEN_DOCUMENT" }] : []),
       sendMessage(message, callback) {
         offscreenCommand = message;
-        // A healthy recorder answers a correctly typed command and stays
-        // silent for anything else, like the real document.
-        if (callback && message.kind === "offscreen-start") {
+        // Every command in this harness answers ok so the worker's bounded
+        // send helpers resolve immediately.
+        if (callback) {
           setTimeout(() => callback({ ok: true }), 0);
         }
         return Promise.resolve();
@@ -66,7 +67,9 @@ async function testWorker() {
     commands: { onCommand: { addListener() {} } },
     tabs: {
       query: async () => [],
-      sendMessage: async () => {},
+      sendMessage: async (id, message) => {
+        tabMessages.push({ id, message });
+      },
       captureVisibleTab: async () => "",
       onRemoved: { addListener() {} },
       onUpdated: { addListener() {} },
@@ -147,6 +150,143 @@ async function testWorker() {
     "no stray envelope fields",
   );
   assert(response.ok === true, "content script got ok:true");
+
+  // Move the worker into a live recording state without a real recorder.
+  onMessage(
+    {
+      kind: "record-status",
+      status: {
+        state: "recording",
+        startedAt: Date.now(),
+        camera: true,
+        microphone: true,
+        tabAudio: true,
+        unavailable: [],
+        sessionId: offscreenCommand.sessionId,
+      },
+    },
+    {},
+    () => {},
+  );
+
+  const sendContent = (message) =>
+    onMessage(message, { tab: { id: 7 } }, () => {});
+
+  sendContent({ kind: "record-pause" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-pause",
+    "chip pause becomes offscreen-pause",
+  );
+
+  sendContent({ kind: "record-resume" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-resume",
+    "chip resume becomes offscreen-resume",
+  );
+
+  tabMessages.length = 0;
+  const frame = "data:image/jpeg;base64,AAAA";
+  onMessage(
+    {
+      kind: "recorder-camera-frame",
+      sessionId: offscreenCommand.sessionId,
+      dataUrl: frame,
+      target: "offscreen",
+    },
+    {},
+    () => {},
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  const relayed = tabMessages.find(
+    (entry) => entry.message.kind === "camera-preview-frame",
+  );
+  assert(
+    relayed?.id === 7 && relayed.message.dataUrl === frame,
+    "camera frame is relayed to the recording tab",
+  );
+
+  sendContent({ kind: "record-discard" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-discard",
+    "chip discard becomes offscreen-discard",
+  );
+
+  sendContent({ kind: "record-stop" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-discard",
+    "stop after discard is ignored (one terminal command per recording)",
+  );
+
+  // A stop clicked while the recorder is still starting must survive the
+  // post-start check, then be delivered on the first live status. This closes
+  // the race where the click lands between those two points.
+  const firstSession = offscreenCommand.sessionId;
+  onMessage(
+    {
+      kind: "record-status",
+      status: { state: "discarded", sessionId: firstSession },
+    },
+    {},
+    () => {},
+  );
+  await new Promise((r) => setTimeout(r, 60));
+
+  const secondStart = await new Promise((resolve) => {
+    onMessage(
+      { kind: "record-start", camera: true, microphone: false, tabAudio: false },
+      { tab: { id: 7 } },
+      resolve,
+    );
+    setTimeout(() => resolve({ ok: false, error: "timeout" }), 4000);
+  });
+  assert(secondStart.ok === true, "second recording starts after a terminal status");
+  const secondSession = offscreenCommand.sessionId;
+  assert(
+    secondSession && secondSession !== firstSession,
+    "second recording gets a fresh session id",
+  );
+
+  sendContent({ kind: "record-stop" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-start",
+    "startup stop is held instead of sent to a recorder that is not live",
+  );
+
+  onMessage(
+    {
+      kind: "record-status",
+      status: {
+        state: "recording",
+        startedAt: Date.now(),
+        camera: true,
+        microphone: false,
+        tabAudio: false,
+        unavailable: [],
+        sessionId: secondSession,
+      },
+    },
+    {},
+    () => {},
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert(
+    offscreenCommand.kind === "offscreen-stop",
+    "held startup stop is delivered on the first live status",
+  );
+
+  onMessage(
+    {
+      kind: "record-status",
+      status: { state: "saved", filename: "test.webm", sessionId: secondSession },
+    },
+    {},
+    () => {},
+  );
 }
 
 // Recorder: an unrecognized command must be answered, not left hanging.

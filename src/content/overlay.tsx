@@ -13,6 +13,7 @@
 
 import { createRoot } from 'react-dom/client';
 import { OverlayApp } from './OverlayApp';
+import { RecordingChip } from './recording-chip';
 import { createContext } from 'react';
 
 export const ShadowRootContext = createContext<ShadowRoot | null>(null);
@@ -38,4 +39,24 @@ if (!document.getElementById('capann-host')) {
       <OverlayApp />
     </ShadowRootContext.Provider>
   );
+
+  // Recording chip host. This is deliberately a sibling of #capann-host:
+  // OverlayApp hides the annotation overlay for the whole capture, while the
+  // chip (and its camera bubble) must stay visible and therefore be recorded.
+  // Keeping a separate host means the existing capture invariant in
+  // OverlayApp does not need a second visibility mode.
+  const chipHost = document.createElement('div');
+  chipHost.id = 'capann-recording-host';
+  chipHost.style.all = 'initial';
+  chipHost.style.display = 'block';
+  chipHost.style.position = 'fixed';
+  chipHost.style.inset = '0';
+  chipHost.style.pointerEvents = 'none';
+  chipHost.style.zIndex = '2147483647';
+  document.documentElement.append(chipHost);
+
+  const chipShadow = chipHost.attachShadow({ mode: 'open' });
+  const chipContainer = document.createElement('div');
+  chipShadow.append(chipContainer);
+  createRoot(chipContainer).render(<RecordingChip />);
 }
