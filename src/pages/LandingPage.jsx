@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import SiteFooter from '../components/SiteFooter.jsx'
 import {
   ArrowRight,
   Check,
@@ -131,8 +132,6 @@ const TOOLS_ROW2 = [
 ]
 
 const COLORS = ['#A78BFA', '#86EFAC', '#F5E8A6', '#F5F5F7']
-
-const YEAR = new Date().getFullYear()
 
 function ToolbarDemo() {
   const [tool, setTool] = useState('pencil')
@@ -574,13 +573,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <footer className="flex flex-wrap items-center gap-4 pt-8 pb-16 border-t border-white/10 text-[13px] text-muted">
-          <div className="flex items-center gap-2.5 mr-auto">
-            <img src={`${import.meta.env.BASE_URL}svg/capann-icon-light.svg`} alt="" className="w-[22px] h-[22px] opacity-70" />
-            <div>Built by <a href="https://duowork.tech" className="text-draw hover:text-draw-hover">Duowork</a>. We build engines around how people and businesses work.</div>
-          </div>
-          <div>© {YEAR} Capann · Free to use. Pro $10, one-time.</div>
-        </footer>
+        <SiteFooter />
       </main>
     </div>
   )

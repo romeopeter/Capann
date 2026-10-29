@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router'
 import LandingPage from './pages/LandingPage.jsx'
 import PlaygroundPage from './pages/PlaygroundPage.jsx'
+import PrivacyPage from './pages/PrivacyPage.jsx'
 
 // The site is served from the configured Vite base (custom domain → "/").
 const basename = import.meta.env.BASE_URL.replace(/\/+$/, '') || '/'
@@ -24,6 +25,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/playground" element={<PlaygroundPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="*" element={<LandingPage />} />
       </Routes>
     </BrowserRouter>

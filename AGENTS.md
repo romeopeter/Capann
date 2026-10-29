@@ -25,7 +25,7 @@ Vite 8 + React 19 (JS, no TypeScript) + Tailwind CSS v4 (`@tailwindcss/vite`) + 
 ## Deployment
 Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-website`).
 - `vite.config.js` sets `base: '/'` for the custom domain. If the site moves back under GitHub Project Pages, update `base` to `/capann-website/` and the deploy target together.
-- `postbuild` writes `dist/404.html` as an SPA fallback so `/playground` deep links boot the router on static hosting.
+- `postbuild` writes `dist/404.html` as an SPA fallback so deep links like `/playground` and `/privacy` boot the router on static hosting.
 - After `npm run deploy`, Pages must serve from the `gh-pages` branch (one-time repo-settings step).
 - `index.html` asset URLs are rewritten by Vite automatically; **hardcoded absolute public paths in JSX break under a non-root base** — always prefix with `import.meta.env.BASE_URL` (see the logo `<img>` usage in `src/pages/LandingPage.jsx` and `src/pages/PlaygroundPage.jsx`).
 
@@ -40,8 +40,10 @@ Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-w
 - Tailwind v4 tree-shakes unused non-color theme vars from output; utilities still generate on demand. Verified pattern: use the class, `npm run build`, grep `dist/assets/*.css`.
 
 ## App structure
-- `src/App.jsx` — router shell (`BrowserRouter` with the Vite base as `basename`, `/` landing, `/playground`, catch-all landing) + scroll-to-top on route change.
+- `src/App.jsx` — router shell (`BrowserRouter` with the Vite base as `basename`, `/` landing, `/playground`, `/privacy`, catch-all landing) + scroll-to-top on route change.
 - `src/pages/LandingPage.jsx` — entire landing page (data arrays `USES`/`FEATURE_GROUPS`/`SHORTCUTS`/`FAQS` + `ToolbarDemo` interactive toolbar mock with `useState` for tool/color/size). `ToolbarDemo` is a demo, not the real extension.
+- `src/pages/PrivacyPage.jsx` — `/privacy` policy page on the dark landing palette: hero + date meta, sticky on-page contents (desktop only), ten policy sections rendered with small local `Paragraph`/`SubHeading`/`Bullets`/`Section` helpers. Policy copy is owner-supplied — don't rewrite it, only re-port it.
+- `src/components/SiteFooter.jsx` — shared footer (Duowork line, Home / Playground / Privacy links, copyright) used by the landing and privacy pages.
 - `src/pages/PlaygroundPage.jsx` — playground shell: intro, accessible experience tabs, manual activation bar, Reset, sample frame, challenge strip. No extension detection, no annotation canvas — the installed extension does the drawing.
 - `src/playground/experiences.js` — tab copy + challenge strip data.
 - `src/playground/samples/{FeedbackSample,TeachSample,DiagnoseSample}.jsx` — three self-contained sample pages with local-only state (all reset by remounting via a reset key).
