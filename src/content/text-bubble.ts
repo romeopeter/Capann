@@ -38,11 +38,16 @@ export interface BubbleBody {
   bottom: number;
 }
 
+/**
+ * Tail triangle. On top/bottom edges `baseLeft.x < baseRight.x`; on
+ * left/right edges `baseLeft` is the upper base point (`baseLeft.y <
+ * baseRight.y`).
+ */
 export interface BubbleTail {
   baseLeft: Point;
   baseRight: Point;
   tip: Point;
-  side: "top" | "bottom";
+  side: "top" | "bottom" | "left" | "right";
 }
 
 export interface BubblePlacement {
@@ -286,6 +291,77 @@ export function placeTextBubble(
   return { body, tail };
 }
 
+/**
+ * Tail for a bubble whose body is pinned (the tip was dragged). The tail
+ * leaves from whichever edge faces the tip — the comparison is normalized by
+ * the half-size so a wide bubble doesn't always pick top/bottom — with its
+ * base slid along that edge toward the tip but kept clear of the corners.
+ * Returns null when the tip is inside the body.
+ */
+export function attachTail(anchor: Point, body: BubbleBody): BubbleTail | null {
+  const { radius, tailHalf } = TEXT_BUBBLE;
+  const w = body.right - body.left;
+  const h = body.bottom - body.top;
+  if (
+    anchor.x > body.left - 2 &&
+    anchor.x < body.right + 2 &&
+    anchor.y > body.top - 2 &&
+    anchor.y < body.bottom + 2
+  )
+    return null;
+  const dx = anchor.x - (body.left + w / 2);
+  const dy = anchor.y - (body.top + h / 2);
+  const halfBase = (edge: number) =>
+    Math.max(0, Math.min(tailHalf, (edge - 2 * radius) / 2));
+  const clamp = (v: number, lo: number, hi: number) =>
+    lo > hi ? (lo + hi) / 2 : Math.min(Math.max(v, lo), hi);
+  const tip = { x: anchor.x, y: anchor.y };
+
+  if (Math.abs(dy) / (h / 2) >= Math.abs(dx) / (w / 2) || halfBase(h) < 4) {
+    const half = halfBase(w);
+    const y = dy < 0 ? body.top : body.bottom;
+    const c = clamp(anchor.x, body.left + radius + half, body.right - radius - half);
+    return {
+      baseLeft: { x: c - half, y },
+      baseRight: { x: c + half, y },
+      tip,
+      side: dy < 0 ? "top" : "bottom",
+    };
+  }
+  const half = halfBase(h);
+  const x = dx < 0 ? body.left : body.right;
+  const c = clamp(anchor.y, body.top + radius + half, body.bottom - radius - half);
+  return {
+    baseLeft: { x, y: c - half },
+    baseRight: { x, y: c + half },
+    tip,
+    side: dx < 0 ? "left" : "right",
+  };
+}
+
+/**
+ * Body + tail for a comment: pinned at `bubble` when the tip has been dragged,
+ * otherwise placed automatically around the tip. The composer and the
+ * committed bubble both go through this, so a note never jumps on commit.
+ */
+export function placeComment(
+  anchor: Point,
+  width: number,
+  height: number,
+  bubble: Point | undefined,
+  viewport: BubbleViewport = defaultViewport(),
+): BubblePlacement {
+  if (!bubble) return placeTextBubble(anchor, width, height, viewport);
+  const w = clampWidth(width);
+  const body: BubbleBody = {
+    left: bubble.x,
+    top: bubble.y,
+    right: bubble.x + w,
+    bottom: bubble.y + Math.max(1, height),
+  };
+  return { body, tail: attachTail(anchor, body) };
+}
+
 /** Full committed layout for a text annotation. */
 export function textBubbleLayout(
   ann: TextAnnotation,
@@ -301,7 +377,13 @@ export function textBubbleLayout(
     Math.round(fontSize * TEXT_BUBBLE.lineHeightRatio),
   );
   const height = Math.max(1, lines.length) * lineHeight + padding * 2;
-  const placement = placeTextBubble(ann.position, width, height, viewport);
+  const placement = placeComment(
+    ann.position,
+    width,
+    height,
+    ann.bubble,
+    viewport,
+  );
   return {
     ...placement,
     lines,
@@ -337,6 +419,85 @@ export function roundedRectPath(
     `A ${format(r)} ${format(r)} 0 0 1 ${format(r)} 0`,
     "Z",
   ].join(" ");
+}
+
+/** Re-express a page-space tail relative to the bubble body's top-left. */
+export function localTail(tail: BubbleTail, body: BubbleBody): BubbleTail {
+  const local = (p: Point): Point => ({ x: p.x - body.left, y: p.y - body.top });
+  return {
+    baseLeft: local(tail.baseLeft),
+    baseRight: local(tail.baseRight),
+    tip: local(tail.tip),
+    side: tail.side,
+  };
+}
+
+/**
+ * Bubble body and tail as ONE closed outline in local space. Filling and
+ * stroking a single path leaves no border across the tail base — drawing the
+ * rounded rect and the triangle separately always left a seam there, since
+ * the translucent fill cannot fully cover the body's own stroke.
+ *
+ * The tail base always sits on the straight part of its edge (placement keeps
+ * it clear of the corner radii), so it splices in between corners on any of
+ * the four sides.
+ */
+export function bubbleOutlinePath(
+  width: number,
+  height: number,
+  tail: BubbleTail | null,
+  radius: number = TEXT_BUBBLE.radius,
+): string {
+  const w = Math.max(1, width);
+  const h = Math.max(1, height);
+  const r = Math.max(0, Math.min(radius, w / 2, h / 2));
+  const parts = [`M ${format(r)} 0`];
+  // Top edge runs left -> right.
+  if (tail?.side === "top")
+    parts.push(
+      `H ${format(tail.baseLeft.x)}`,
+      `L ${format(tail.tip.x)} ${format(tail.tip.y)}`,
+      `L ${format(tail.baseRight.x)} 0`,
+    );
+  parts.push(
+    `H ${format(w - r)}`,
+    `A ${format(r)} ${format(r)} 0 0 1 ${format(w)} ${format(r)}`,
+  );
+  // Right edge runs top -> bottom.
+  if (tail?.side === "right")
+    parts.push(
+      `V ${format(tail.baseLeft.y)}`,
+      `L ${format(tail.tip.x)} ${format(tail.tip.y)}`,
+      `L ${format(w)} ${format(tail.baseRight.y)}`,
+    );
+  parts.push(
+    `V ${format(h - r)}`,
+    `A ${format(r)} ${format(r)} 0 0 1 ${format(w - r)} ${format(h)}`,
+  );
+  // Bottom edge runs right -> left.
+  if (tail?.side === "bottom")
+    parts.push(
+      `H ${format(tail.baseRight.x)}`,
+      `L ${format(tail.tip.x)} ${format(tail.tip.y)}`,
+      `L ${format(tail.baseLeft.x)} ${format(h)}`,
+    );
+  parts.push(
+    `H ${format(r)}`,
+    `A ${format(r)} ${format(r)} 0 0 1 0 ${format(h - r)}`,
+  );
+  // Left edge runs bottom -> top.
+  if (tail?.side === "left")
+    parts.push(
+      `V ${format(tail.baseRight.y)}`,
+      `L ${format(tail.tip.x)} ${format(tail.tip.y)}`,
+      `L 0 ${format(tail.baseLeft.y)}`,
+    );
+  parts.push(
+    `V ${format(r)}`,
+    `A ${format(r)} ${format(r)} 0 0 1 ${format(r)} 0`,
+    "Z",
+  );
+  return parts.join(" ");
 }
 
 /** Filled triangle for the bubble tail. */

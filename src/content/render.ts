@@ -23,9 +23,8 @@ import type {
 } from "../shared/types";
 import {
   bubbleFont,
-  roundedRectPath,
-  tailOutlinePath,
-  tailTrianglePath,
+  bubbleOutlinePath,
+  localTail,
   textBubbleLayout,
 } from "./text-bubble";
 
@@ -163,6 +162,12 @@ function drawShape(ctx: CanvasRenderingContext2D, ann: ShapeAnnotation): void {
   const top = Math.min(ann.start.y, ann.end.y);
   const width = Math.abs(ann.end.x - ann.start.x);
   const height = Math.abs(ann.end.y - ann.start.y);
+  if (ann.rotation) {
+    // Rotate about the shape's center; line width is unaffected.
+    ctx.translate(left + width / 2, top + height / 2);
+    ctx.rotate(ann.rotation);
+    ctx.translate(-(left + width / 2), -(top + height / 2));
+  }
 
   ctx.beginPath();
   if (ann.type === "rectangle") {
@@ -189,6 +194,9 @@ function drawShape(ctx: CanvasRenderingContext2D, ann: ShapeAnnotation): void {
   ctx.restore();
 }
 
+/** Comment body and tail share the panel surface (--surface-base at 96%). */
+const COMMENT_SURFACE = "rgba(28,28,32,0.96)";
+
 function drawText(ctx: CanvasRenderingContext2D, ann: TextAnnotation): void {
   const layout = textBubbleLayout(ann);
   const {
@@ -201,55 +209,25 @@ function drawText(ctx: CanvasRenderingContext2D, ann: TextAnnotation): void {
     lineHeight,
     padding,
   } = layout;
-  const localTail = tail
-    ? {
-        baseLeft: {
-          x: tail.baseLeft.x - body.left,
-          y: tail.baseLeft.y - body.top,
-        },
-        baseRight: {
-          x: tail.baseRight.x - body.left,
-          y: tail.baseRight.y - body.top,
-        },
-        tip: {
-          x: tail.tip.x - body.left,
-          y: tail.tip.y - body.top,
-        },
-        side: tail.side,
-      }
-    : null;
-
   ctx.save();
   ctx.translate(body.left, body.top);
 
-  const bodyPath = new Path2D(roundedRectPath(width, height));
-
-  // One shadow pass covers the body and the tail silhouette.
+  // Body and tail are one outline: a single fill (with the shadow) and a
+  // single hairline stroke, so nothing is drawn across the tail base.
+  const bodyPath = new Path2D(
+    bubbleOutlinePath(width, height, tail ? localTail(tail, body) : null),
+  );
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.4)";
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 6;
-  ctx.fillStyle = "rgba(28,28,32,0.96)";
+  ctx.fillStyle = COMMENT_SURFACE;
   ctx.fill(bodyPath);
-  if (localTail) {
-    ctx.fillStyle = ann.color;
-    ctx.fill(new Path2D(tailTrianglePath(localTail)));
-  }
   ctx.restore();
 
   ctx.strokeStyle = "rgba(255,255,255,0.15)";
   ctx.lineWidth = 1;
   ctx.stroke(bodyPath);
-
-  if (localTail) {
-    // Re-fill after the body stroke so the tail base does not show a seam,
-    // then outline only the two outer edges to continue the border.
-    ctx.fillStyle = ann.color;
-    ctx.fill(new Path2D(tailTrianglePath(localTail)));
-    ctx.strokeStyle = "rgba(255,255,255,0.15)";
-    ctx.lineWidth = 1;
-    ctx.stroke(new Path2D(tailOutlinePath(localTail)));
-  }
 
   if (ann.text.trim()) {
     ctx.save();
@@ -288,25 +266,11 @@ export function drawTextHover(
   ctx.lineWidth = 1.5;
   ctx.shadowColor = "rgba(167,139,250,0.5)";
   ctx.shadowBlur = 12;
-  ctx.stroke(new Path2D(roundedRectPath(width, height)));
-  if (tail) {
-    const localTail = {
-      baseLeft: {
-        x: tail.baseLeft.x - body.left,
-        y: tail.baseLeft.y - body.top,
-      },
-      baseRight: {
-        x: tail.baseRight.x - body.left,
-        y: tail.baseRight.y - body.top,
-      },
-      tip: {
-        x: tail.tip.x - body.left,
-        y: tail.tip.y - body.top,
-      },
-      side: tail.side,
-    };
-    ctx.stroke(new Path2D(tailOutlinePath(localTail)));
-  }
+  ctx.stroke(
+    new Path2D(
+      bubbleOutlinePath(width, height, tail ? localTail(tail, body) : null),
+    ),
+  );
   ctx.restore();
 }
 

@@ -46,9 +46,15 @@ export interface ArrowAnnotation extends AnnotationBase {
 
 export interface ShapeAnnotation extends AnnotationBase {
   type: "rectangle" | "ellipse";
+  /**
+   * `start`/`end` describe the shape in its own, unrotated frame. The shape is
+   * then rotated by `rotation` about the center of that box.
+   */
   start: Point;
   end: Point;
   filled: boolean;
+  /** Clockwise rotation in radians. Optional so older saved shapes still load. */
+  rotation?: number;
 }
 
 export interface TextAnnotation extends AnnotationBase {
@@ -63,6 +69,12 @@ export interface TextAnnotation extends AnnotationBase {
    * default width when it is missing.
    */
   width?: number;
+  /**
+   * Top-left of the bubble body, pinned once the tip has been dragged
+   * independently of the bubble. Absent = automatic placement above/below the
+   * tip (every comment before tip dragging existed, and fresh comments).
+   */
+  bubble?: Point;
 }
 
 export type AnnotationObject = StrokeAnnotation | ArrowAnnotation | ShapeAnnotation | TextAnnotation;
@@ -204,7 +216,7 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   arrow: "Arrow",
   rectangle: "Rectangle",
   ellipse: "Ellipse",
-  text: "Text",
+  text: "Comment",
   select: "Select",
   laser: "Laser pointer",
   spotlight: "Spotlight",

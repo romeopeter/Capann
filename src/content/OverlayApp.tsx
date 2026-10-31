@@ -26,6 +26,12 @@
  *   one-shot hide that has to restore to whatever the recorder currently wants.
  *   `savePng` therefore hides the shadow host directly and restores from
  *   `captureHidden`.
+ * - "Annotate screen" is the one case where annotations are WANTED in a
+ *   capture. `overlayVisible = !captureHidden || annotateWhileRecording` keeps
+ *   the host on screen, but the panel (`shellView`) stays unmounted unless the
+ *   chip's pencil bubble opens it (via `annotate-bridge.ts`). With the option
+ *   off, nothing changes: the whole host is hidden for the capture. PNG export
+ *   still restores to `overlayVisible`, never blindly to "visible".
  * - The recording chip is the one deliberate exception. `recording-chip.tsx`
  *   mounts in a sibling host (`#capann-recording-host`) and is intentionally
  *   visible in the capture: the presenter needs its timer, pause/stop/discard
@@ -58,6 +64,7 @@ import {
   useRef,
   useCallback,
   useContext,
+  useSyncExternalStore,
 } from "react";
 import type {
   AnnotationObject,
@@ -79,10 +86,16 @@ import { STORAGE_KEY_PREFIX } from "../shared/types";
 import {
   annotationBounds,
   benderHandle,
-  cursorForHandle,
   findTopmostHit,
   handleAtPoint,
-  handlesForBounds,
+  handlesForAnnotation,
+  isCommentTip,
+  isRotateHandle,
+  moveCommentTip,
+  rotateAnnotation,
+  rotateHandlePoint,
+  annotationCenter,
+  shapeRotation,
   hitTest,
   isBenderHandle,
   resizeAnnotation,
@@ -94,19 +107,24 @@ import {
   clampFontSize,
   clampWidth,
   composerMaxHeight,
-  contrastColor,
-  placeTextBubble,
-  roundedRectPath,
-  tailOutlinePath,
-  tailTrianglePath,
+  bubbleOutlinePath,
+  localTail,
+  placeComment,
   textFontSize,
   TEXT_BUBBLE,
 } from "./text-bubble";
-import { CapannShell, SHELL_BUTTON } from "./shell";
+import { CapannShell, PANEL_FADE_MS, SHELL_BUTTON } from "./shell";
 import type { ShellPosition } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
-import { MarkerCircleIcon, RecordIcon } from "@phosphor-icons/react";
+import { annotateBridge } from "./annotate-bridge";
+import {
+  eraserCursor,
+  selectCursor,
+  setCanvasCursor,
+  toolCursor,
+} from "./cursors";
+import { PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "pencil",
@@ -151,17 +169,21 @@ const DELETE_ICON =
 const HISTORY_LIMIT = 50;
 
 /**
- * Ring cursor matching the eraser's reach, so it's obvious what will be rubbed
- * out. Radius is clamped because browsers refuse to render cursors past ~128px.
+ * Object rotated by however far the pointer has swung around its center since
+ * the drag began. Always derived from the original object, so frames do not
+ * accumulate error.
  */
-function eraserCursor(strokeWidth: number): string {
-  const r = Math.min(48, Math.max(10, strokeWidth));
-  const size = r * 2;
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">` +
-    `<circle cx="${r}" cy="${r}" r="${r - 1}" fill="rgba(245,245,247,0.18)" ` +
-    `stroke="#F5F5F7" stroke-width="1.5"/></svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${r} ${r}, cell`;
+function rotationFromDrag(
+  original: AnnotationObject,
+  start: Point,
+  point: Point,
+  snap: boolean,
+): AnnotationObject {
+  const c = annotationCenter(original);
+  const delta =
+    Math.atan2(point.y - c.y, point.x - c.x) -
+    Math.atan2(start.y - c.y, start.x - c.x);
+  return rotateAnnotation(original, delta, snap);
 }
 
 /**
@@ -306,11 +328,11 @@ interface TextEditor {
   container: HTMLDivElement;
   svg: SVGSVGElement;
   bodyPath: SVGPathElement;
-  tailPath: SVGPathElement;
-  tailOutline: SVGPathElement;
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
   anchor: Point;
+  /** Pinned bubble position of the note being edited (see TextAnnotation). */
+  bubble?: Point;
   existingId: string | null;
   color: string;
   width: number;
@@ -342,10 +364,11 @@ function positionTextEditor(editor: TextEditor): void {
   editor.input.style.height = `${bodyHeight}px`;
   editor.input.style.overflowY = scrollHeight > maxHeight ? "auto" : "hidden";
 
-  const { body, tail } = placeTextBubble(
+  const { body, tail } = placeComment(
     editor.anchor,
     editor.width,
     bodyHeight,
+    editor.bubble,
     viewport,
   );
   const bubbleWidth = body.right - body.left;
@@ -359,32 +382,16 @@ function positionTextEditor(editor: TextEditor): void {
   editor.svg.setAttribute("viewBox", `0 0 ${bubbleWidth} ${bubbleHeight}`);
   editor.svg.setAttribute("width", `${bubbleWidth}`);
   editor.svg.setAttribute("height", `${bubbleHeight}`);
-  editor.bodyPath.setAttribute("d", roundedRectPath(bubbleWidth, bubbleHeight));
-
-  if (tail) {
-    const localTail = {
-      baseLeft: {
-        x: tail.baseLeft.x - body.left,
-        y: tail.baseLeft.y - body.top,
-      },
-      baseRight: {
-        x: tail.baseRight.x - body.left,
-        y: tail.baseRight.y - body.top,
-      },
-      tip: {
-        x: tail.tip.x - body.left,
-        y: tail.tip.y - body.top,
-      },
-      side: tail.side,
-    };
-    editor.tailPath.setAttribute("d", tailTrianglePath(localTail));
-    editor.tailOutline.setAttribute("d", tailOutlinePath(localTail));
-    editor.tailPath.style.display = "";
-    editor.tailOutline.style.display = "";
-  } else {
-    editor.tailPath.style.display = "none";
-    editor.tailOutline.style.display = "none";
-  }
+  // One outline for body + tail so the composer has no seam at the tail base
+  // and matches the committed bubble exactly.
+  editor.bodyPath.setAttribute(
+    "d",
+    bubbleOutlinePath(
+      bubbleWidth,
+      bubbleHeight,
+      tail ? localTail(tail, body) : null,
+    ),
+  );
 
   const buttonGap = 38;
   const canUseRight = body.right + buttonGap <= viewport.width - 8;
@@ -436,6 +443,22 @@ export function OverlayApp() {
     microphone: true,
     tabAudio: true,
   });
+  // "Annotate screen": annotations stay in the video and the pencil bubble on
+  // the recording chip shows/hides the panel. Local to the overlay on purpose —
+  // the recorder never needs it, so it is not part of `RecordOptions` or any
+  // message contract.
+  const [annotateWhileRecording, setAnnotateWhileRecording] = useState(false);
+  const annotatePanelOpen = useSyncExternalStore(
+    annotateBridge.subscribe,
+    () => annotateBridge.getSnapshot().panelOpen,
+  );
+  // A capture is running (or about to) AND the presenter asked to annotate it.
+  const annotatingCapture = captureHidden && annotateWhileRecording;
+  // Whether the annotation host may be on screen. Annotations are normally kept
+  // out of a capture; "Annotate screen" is the one case where they are wanted
+  // in it. The panel/shell is still hidden unless the bubble opens it (see
+  // `shellView`), so only the drawn marks enter the video by default.
+  const overlayVisible = !captureHidden || annotateWhileRecording;
   const [recorderPreparation, setRecorderPreparation] = useState<
     "idle" | "preparing" | "ready" | "failed"
   >("idle");
@@ -478,12 +501,14 @@ export function OverlayApp() {
   const cursorRef = useRef<Point>({ x: -100, y: -100 });
   const laserTrailRef = useRef<{ point: Point; time: number }[]>([]);
   const laserActiveRef = useRef(false);
+  // Latest tool for the long-lived laser/spotlight rAF loop.
+  const toolRef = useRef<ToolId>("pencil");
   const rafHandleRef = useRef(0);
   const saveTimerRef = useRef(0);
   const editorRef = useRef<TextEditor | null>(null);
   const objectsRef = useRef<AnnotationObject[]>(objects);
   const selectionDragRef = useRef<{
-    kind: "move" | "resize" | "bend";
+    kind: "move" | "resize" | "bend" | "rotate" | "tip";
     object: AnnotationObject;
     start: Point;
     handle: number;
@@ -591,17 +616,21 @@ export function OverlayApp() {
 
     const capturing = drawModeEnabled && CAPTURING_TOOLS.has(tool);
     liveCanvas.style.pointerEvents = capturing ? "auto" : "none";
-    liveCanvas.style.cursor = !capturing
+    setCanvasCursor(
+      liveCanvas,
+      !capturing
       ? ""
       : tool === "select"
-        ? selectedId
-          ? "move"
-          : "default"
+        ? selectCursor(selectedId ? "move" : "select")
         : tool === "eraser"
           ? eraserCursor(strokeWidth)
-          : tool === "text"
-            ? "text"
-            : "crosshair";
+          : (toolCursor(tool, color) ?? "crosshair"),
+    );
+
+    // The loop below outlives this effect run, so it must read the tool from a
+    // ref. Closing over `tool` froze it at whatever was selected when the loop
+    // started, and switching laser -> spotlight kept drawing the laser.
+    toolRef.current = tool;
 
     const needsRaf =
       drawModeEnabled && (tool === "laser" || tool === "spotlight");
@@ -619,7 +648,7 @@ export function OverlayApp() {
         );
         clearLive();
 
-        if (tool === "laser") {
+        if (toolRef.current === "laser") {
           for (const entry of laserTrailRef.current) {
             const age = (now - entry.time) / LASER_TRAIL_MS;
             const alpha = 1 - age;
@@ -676,7 +705,7 @@ export function OverlayApp() {
       rafHandleRef.current = 0;
       clearLive();
     }
-  }, [drawModeEnabled, tool, strokeWidth, clearLive, selectedId]);
+  }, [drawModeEnabled, tool, strokeWidth, color, clearLive, selectedId]);
 
   const makeId = useCallback(() => {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -837,7 +866,6 @@ export function OverlayApp() {
 
       const container = document.createElement("div");
       container.className = "text-composer";
-      container.style.setProperty("--note-color", noteColor);
       container.style.width = `${width}px`;
 
       const svgNS = "http://www.w3.org/2000/svg";
@@ -846,11 +874,7 @@ export function OverlayApp() {
       svg.setAttribute("overflow", "visible");
       const bodyPath = document.createElementNS(svgNS, "path");
       bodyPath.setAttribute("class", "text-composer-body");
-      const tailPath = document.createElementNS(svgNS, "path");
-      tailPath.setAttribute("class", "text-composer-tail");
-      const tailOutline = document.createElementNS(svgNS, "path");
-      tailOutline.setAttribute("class", "text-composer-tail-line");
-      svg.append(bodyPath, tailPath, tailOutline);
+      svg.append(bodyPath);
 
       const input = document.createElement("textarea");
       input.className = "text-composer-input";
@@ -869,8 +893,6 @@ export function OverlayApp() {
       send.title = "Send comment";
       send.tabIndex = -1;
       send.setAttribute("aria-label", "Send comment");
-      send.style.background = noteColor;
-      send.style.color = contrastColor(noteColor);
       send.innerHTML =
         '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
         '<path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" ' +
@@ -883,11 +905,10 @@ export function OverlayApp() {
         container,
         svg,
         bodyPath,
-        tailPath,
-        tailOutline,
         input,
         send,
         anchor,
+        bubble: current?.bubble,
         existingId: current?.id ?? null,
         color: noteColor,
         width,
@@ -960,12 +981,23 @@ export function OverlayApp() {
   const drawSelection = useCallback(
     (ctx: CanvasRenderingContext2D, ann: AnnotationObject) => {
       const b = annotationBounds(ann);
+      const rotation = shapeRotation(ann);
+      const center = annotationCenter(ann);
       ctx.save();
       ctx.strokeStyle = "#A78BFA";
       ctx.fillStyle = "#1C1C20";
       ctx.lineWidth = 1.5;
+      // The frame turns with a rotated shape; handles are placed in page
+      // space below so they stay crisp and a constant size.
+      ctx.save();
+      if (rotation !== 0) {
+        ctx.translate(center.x, center.y);
+        ctx.rotate(rotation);
+        ctx.translate(-center.x, -center.y);
+      }
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+      ctx.restore();
       ctx.setLineDash([]);
       if (
         ann.type === "rectangle" ||
@@ -973,12 +1005,38 @@ export function OverlayApp() {
         ann.type === "arrow" ||
         ann.type === "text"
       ) {
-        for (const corner of handlesForBounds(b)) {
+        for (const corner of handlesForAnnotation(ann)) {
           ctx.beginPath();
           ctx.arc(corner.x, corner.y, 5, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
         }
+      }
+      // Comment tip: a knob on the tail's point. Dragging it re-aims the
+      // pointer while the bubble stays put.
+      if (ann.type === "text") {
+        ctx.beginPath();
+        ctx.arc(ann.position.x, ann.position.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "#A78BFA";
+        ctx.fill();
+        ctx.strokeStyle = "#1C1C20";
+        ctx.stroke();
+        ctx.strokeStyle = "#A78BFA";
+      }
+      // Rotate handle: a knob on a short stem above the top edge.
+      const rotateKnob = rotateHandlePoint(ann);
+      if (rotateKnob) {
+        const topMid = handlesForAnnotation(ann)[4]!;
+        ctx.beginPath();
+        ctx.moveTo(topMid.x, topMid.y);
+        ctx.lineTo(rotateKnob.x, rotateKnob.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(rotateKnob.x, rotateKnob.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "#A78BFA";
+        ctx.fill();
+        ctx.strokeStyle = "#1C1C20";
+        ctx.stroke();
       }
       // Bender midpoint handle: drag to adjust the curve (Preview-style).
       if (ann.type === "arrow" && ann.headStyle === "bender") {
@@ -1068,6 +1126,30 @@ export function OverlayApp() {
         ) {
           selectionDragRef.current = {
             kind: "bend",
+            object: selected,
+            start: point,
+            handle: -1,
+            baseline: objects,
+          };
+          return;
+        }
+        // Comment tip sits outside the box, so it is checked before the box
+        // handles; dragging it changes what the comment points at.
+        if (selected?.type === "text" && isCommentTip(point, selected)) {
+          selectionDragRef.current = {
+            kind: "tip",
+            object: selected,
+            start: point,
+            handle: -1,
+            baseline: objects,
+          };
+          return;
+        }
+        // Rotate knob sits above the box, so it is checked before the box
+        // handles; dragging it spins the object about its center.
+        if (selected && isRotateHandle(point, selected)) {
+          selectionDragRef.current = {
+            kind: "rotate",
             object: selected,
             start: point,
             handle: -1,
@@ -1182,25 +1264,36 @@ export function OverlayApp() {
           clearLive();
           drawAnnotation(liveCanvas.getContext("2d")!, preview);
           drawSelection(liveCanvas.getContext("2d")!, preview);
-          liveCanvas.style.cursor = "grabbing";
+          setCanvasCursor(liveCanvas, selectCursor("grabbing"));
           return;
         }
         const preview =
-          selectionDrag.kind === "resize"
-            ? resizeAnnotation(
-                selectionDrag.object,
-                selectionDrag.handle,
-                point,
-              )
-            : translateAnnotation(selectionDrag.object, dx, dy);
+          selectionDrag.kind === "tip" && selectionDrag.object.type === "text"
+            ? moveCommentTip(selectionDrag.object, point)
+            : selectionDrag.kind === "rotate"
+            ? rotationFromDrag(selectionDrag.object, selectionDrag.start, point, e.shiftKey)
+            : selectionDrag.kind === "resize"
+              ? resizeAnnotation(
+                  selectionDrag.object,
+                  selectionDrag.handle,
+                  point,
+                )
+              : translateAnnotation(selectionDrag.object, dx, dy);
         clearLive();
         drawAnnotation(liveCanvas.getContext("2d")!, preview);
         drawSelection(liveCanvas.getContext("2d")!, preview);
         // Active-drag cursor: grabbing for moves, edge cursor for resizes.
-        liveCanvas.style.cursor =
-          selectionDrag.kind === "resize"
-            ? cursorForHandle(selectionDrag.handle)
-            : "grabbing";
+        setCanvasCursor(
+          liveCanvas,
+          selectCursor(
+            selectionDrag.kind === "rotate"
+              ? "rotate"
+              : selectionDrag.kind === "resize"
+                ? selectionDrag.handle
+                : "grabbing",
+            shapeRotation(preview),
+          ),
+        );
         return;
       }
 
@@ -1211,22 +1304,26 @@ export function OverlayApp() {
         const liveCanvas = liveCanvasRef.current;
         if (liveCanvas) {
           const selected = objects.find((o) => o.id === selectedId);
-          let cursor = "default";
-          if (
+          let cursor = selectCursor("select");
+          if (selected && isCommentTip(point, selected)) {
+            cursor = selectCursor("move");
+          } else if (selected && isRotateHandle(point, selected)) {
+            cursor = selectCursor("rotate");
+          } else if (
             selected?.type === "arrow" &&
             selected.headStyle === "bender" &&
             isBenderHandle(point, selected)
           ) {
-            cursor = "move";
+            cursor = selectCursor("move");
           } else if (selected) {
             const h = getSelectedHandle(point, selected);
-            if (h >= 0) cursor = cursorForHandle(h);
-            else if (findSelectable(point, objects)) cursor = "move";
+            if (h >= 0) cursor = selectCursor(h, shapeRotation(selected));
+            else if (findSelectable(point, objects))
+              cursor = selectCursor("move");
           } else if (findSelectable(point, objects)) {
-            cursor = "move";
+            cursor = selectCursor("move");
           }
-          if (liveCanvas.style.cursor !== cursor)
-            liveCanvas.style.cursor = cursor;
+          setCanvasCursor(liveCanvas, cursor);
         }
       }
 
@@ -1348,6 +1445,18 @@ export function OverlayApp() {
             Math.min(300, ((point.x - mx) * -dyc + (point.y - my) * dxc) / len),
           );
           updated = { ...src, bend };
+        } else if (
+          selectionDrag.kind === "tip" &&
+          selectionDrag.object.type === "text"
+        ) {
+          updated = moveCommentTip(selectionDrag.object, point);
+        } else if (selectionDrag.kind === "rotate") {
+          updated = rotationFromDrag(
+            selectionDrag.object,
+            selectionDrag.start,
+            point,
+            e.shiftKey,
+          );
         } else if (selectionDrag.kind === "resize") {
           updated = resizeAnnotation(
             selectionDrag.object,
@@ -1364,7 +1473,8 @@ export function OverlayApp() {
           dx !== 0 ||
           dy !== 0 ||
           selectionDrag.kind === "resize" ||
-          selectionDrag.kind === "bend"
+          selectionDrag.kind === "bend" ||
+          selectionDrag.kind === "rotate"
         )
           commit(next);
         clearLive();
@@ -1373,7 +1483,8 @@ export function OverlayApp() {
           if (ctx) drawSelection(ctx, updated);
         }
         // Reset cursor after the drag so a stale grabbing hand doesn't stick.
-        if (liveCanvasRef.current) liveCanvasRef.current.style.cursor = "move";
+        if (liveCanvasRef.current)
+          setCanvasCursor(liveCanvasRef.current, selectCursor("move"));
         return;
       }
 
@@ -1661,7 +1772,7 @@ export function OverlayApp() {
       shadowRoot?.host instanceof HTMLElement ? shadowRoot.host : null;
     // Restore to whatever the recorder currently wants — not blindly visible.
     const restoreHost = () => {
-      if (host) host.style.visibility = captureHidden ? "hidden" : "visible";
+      if (host) host.style.visibility = overlayVisible ? "visible" : "hidden";
     };
 
     // Hide before the paint. The click handler runs before React commits, and
@@ -1715,7 +1826,7 @@ export function OverlayApp() {
       restoreHost();
       savingPngRef.current = false;
     }
-  }, [commitTextInput, captureHidden, shadowRoot]);
+  }, [commitTextInput, overlayVisible, shadowRoot]);
 
   const handleToolChange = useCallback(
     (newTool: ToolId) => {
@@ -1753,6 +1864,29 @@ export function OverlayApp() {
     },
     [commitTextInput, resetDrag],
   );
+
+  // "Annotate screen" plumbing. The chip (separate root) shows the pencil
+  // bubble only while `available`, and toggles `panelOpen`; this component
+  // reacts by opening/closing draw mode with the panel. The latest-values ref
+  // keeps the panel effect keyed on `annotatePanelOpen` alone, so unrelated
+  // re-renders cannot reset a tool the presenter deselected.
+  const annotateSyncRef = useRef({ annotatingCapture, handleDrawModeToggle });
+  useEffect(() => {
+    annotateSyncRef.current = { annotatingCapture, handleDrawModeToggle };
+  });
+  const wasAnnotatingCaptureRef = useRef(false);
+  useEffect(() => {
+    annotateBridge.setAvailable(annotatingCapture);
+    // Leaving the capture (stop/discard/failure) closes the panel and returns
+    // pointer events to the page.
+    if (wasAnnotatingCaptureRef.current && !annotatingCapture)
+      annotateSyncRef.current.handleDrawModeToggle(false);
+    wasAnnotatingCaptureRef.current = annotatingCapture;
+  }, [annotatingCapture]);
+  useEffect(() => {
+    const sync = annotateSyncRef.current;
+    if (sync.annotatingCapture) sync.handleDrawModeToggle(annotatePanelOpen);
+  }, [annotatePanelOpen]);
 
   // Camera and microphone permission belongs to the extension origin. The
   // recorder cannot prompt, so the panel reports whether a grant is missing.
@@ -1827,10 +1961,19 @@ export function OverlayApp() {
     // Hide synchronously before asking the worker to start capturing. React
     // effects run after this click; the direct style change guarantees the
     // first captured frame cannot include Capann's controls or annotations.
-    if (shadowRoot?.host instanceof HTMLElement)
+    //
+    // With "Annotate screen" the host must stay visible for the marks, so the
+    // hide is state-driven (the panel unmounts via `shellView`). In that case
+    // wait for it to paint before the worker mints the stream ID.
+    if (!annotateWhileRecording && shadowRoot?.host instanceof HTMLElement)
       shadowRoot.host.style.visibility = "hidden";
     setCaptureHidden(true);
     try {
+      if (annotateWhileRecording) {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      }
       const response = (await chrome.runtime.sendMessage({
         kind: "record-start",
         ...recordOptions,
@@ -1859,6 +2002,7 @@ export function OverlayApp() {
       setStartRequested(false);
     }
   }, [
+    annotateWhileRecording,
     commitTextInput,
     handleDrawModeToggle,
     recordOptions,
@@ -1909,9 +2053,9 @@ export function OverlayApp() {
   // recorder's desired state.
   useEffect(() => {
     if (shadowRoot?.host instanceof HTMLElement) {
-      shadowRoot.host.style.visibility = captureHidden ? "hidden" : "visible";
+      shadowRoot.host.style.visibility = overlayVisible ? "visible" : "hidden";
     }
-  }, [captureHidden, shadowRoot]);
+  }, [overlayVisible, shadowRoot]);
 
   // Restore state when tabId changes
   useEffect(() => {
@@ -1965,6 +2109,22 @@ export function OverlayApp() {
     window.addEventListener("resize", resizeCanvases);
     return () => window.removeEventListener("resize", resizeCanvases);
   }, [resizeCanvases]);
+
+  // The laser is the pointer: hide the page's own cursor so only the red dot
+  // shows. The canvas is click-through for this tool, so the cursor belongs to
+  // whatever page element is underneath; a document-level rule is the only way
+  // to hide it. It skips Capann's two hosts so the panel and chip keep theirs
+  // (`all: initial` on the hosts stops the page rule being inherited), and it
+  // is removed on every exit path.
+  const laserOn = drawModeEnabled && tool === "laser" && overlayVisible;
+  useEffect(() => {
+    if (!laserOn) return;
+    const style = document.createElement("style");
+    style.textContent =
+      "*:not(#capann-host):not(#capann-recording-host){cursor:none !important}";
+    document.documentElement.append(style);
+    return () => style.remove();
+  }, [laserOn]);
 
   // Handle window pointer move for laser/spotlight
   useEffect(() => {
@@ -2020,7 +2180,7 @@ export function OverlayApp() {
             focused.isContentEditable));
       if (typing) return;
 
-      if (e.key === "Escape" && drawModeEnabled && !captureHidden)
+      if (e.key === "Escape" && drawModeEnabled && overlayVisible)
         setDrawModeEnabled(false);
       if (
         (e.ctrlKey || e.metaKey) &&
@@ -2037,7 +2197,7 @@ export function OverlayApp() {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
         drawModeEnabled &&
-        !captureHidden &&
+        overlayVisible &&
         selectedId
       ) {
         e.preventDefault();
@@ -2048,7 +2208,7 @@ export function OverlayApp() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     drawModeEnabled,
-    captureHidden,
+    overlayVisible,
     duplicateSelected,
     deleteSelected,
     selectedId,
@@ -2138,9 +2298,42 @@ export function OverlayApp() {
   // the host style above cannot disagree. `savePng` does not go through this:
   // it hides the host for one capture and restores it, without touching this
   // flag.
-  const hiddenByCapture = captureHidden
-    ? { visibility: "hidden" as const }
-    : undefined;
+  const hiddenByCapture = overlayVisible
+    ? undefined
+    : { visibility: "hidden" as const };
+  // Which panel view is on screen. During an annotated capture the panel
+  // belongs to the chip's pencil bubble: hidden by default so it never enters
+  // the video, and the Annotate view while the bubble has it open.
+  const shellView: typeof uiView = annotatingCapture
+    ? annotatePanelOpen
+      ? "annotate"
+      : "closed"
+    : uiView;
+  const hidePanelDuringCapture = () => annotateBridge.setPanelOpen(false);
+
+  // Closing fades the panel out. The shell unmounts the moment `shellView`
+  // becomes "closed", so remember what was showing and keep it mounted, fading,
+  // for PANEL_FADE_MS. Layout effect: no frame is painted without the panel in
+  // between. Starting a capture skips the fade — the panel must already be off
+  // screen when the stream ID is minted (see the capture invariant).
+  const [closingView, setClosingView] = useState<typeof uiView | null>(null);
+  const prevShellViewRef = useRef(shellView);
+  const startRequestedRef = useRef(startRequested);
+  startRequestedRef.current = startRequested;
+  useLayoutEffect(() => {
+    const prev = prevShellViewRef.current;
+    prevShellViewRef.current = shellView;
+    if (shellView !== "closed") {
+      setClosingView(null);
+      return;
+    }
+    if (prev === "closed" || startRequestedRef.current) return;
+    setClosingView(prev);
+    const timer = window.setTimeout(() => setClosingView(null), PANEL_FADE_MS);
+    return () => window.clearTimeout(timer);
+  }, [shellView]);
+  const panelClosing = shellView === "closed" && closingView !== null;
+  const panelView = panelClosing ? closingView : shellView;
   const closeUi = () => {
     setUiView("closed");
     // Closing is the reset point: the panel returns to its docked corner the
@@ -2241,6 +2434,9 @@ export function OverlayApp() {
           width: 100%;
           height: 100%;
         }
+        .capann-size-slider:focus-visible .capann-size-thumb {
+          box-shadow: 0 0 0 2px #1C1C20, 0 0 0 4px #A78BFA;
+        }
         .record-option-toggle:focus-visible {
           outline: 2px solid #A78BFA;
           outline-offset: 3px;
@@ -2269,14 +2465,6 @@ export function OverlayApp() {
         }
         .text-composer:focus-within .text-composer-body {
           stroke: #A78BFA;
-        }
-        .text-composer-tail {
-          fill: var(--note-color, #A78BFA);
-        }
-        .text-composer-tail-line {
-          fill: none;
-          stroke: rgba(255, 255, 255, 0.15);
-          stroke-width: 1;
         }
         .text-composer-input {
           position: relative;
@@ -2319,6 +2507,9 @@ export function OverlayApp() {
           border-radius: 999px;
           display: grid;
           place-items: center;
+          background: rgba(28, 28, 32, 0.96);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          color: #A78BFA;
           box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
           cursor: pointer;
           transition:
@@ -2335,7 +2526,7 @@ export function OverlayApp() {
         }
       `}</style>
       <div style={hiddenByCapture}>
-        {uiView === "chooser" && (
+        {panelView === "chooser" && (
           <CapannShell
             title="Capann"
             subtitle="Choose a workspace"
@@ -2344,6 +2535,7 @@ export function OverlayApp() {
             onClose={closeUi}
             position={panelPosition}
             onPositionChange={setPanelPosition}
+            closing={panelClosing}
           >
             <div style={{ display: "grid", gap: 8 }}>
                <button
@@ -2354,8 +2546,8 @@ export function OverlayApp() {
                 style={{ ...SHELL_BUTTON, textAlign: "left" }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <MarkerCircleIcon size={20} weight="fill" />
-                  <span>Annotate</span>
+                  <PencilSimpleIcon size={20} weight="fill" />
+                  <span>Mark screen</span>
                 </div>
                 <span
                   style={{
@@ -2396,18 +2588,19 @@ export function OverlayApp() {
           </CapannShell>
         )}
 
-        {uiView === "annotate" && (
+        {panelView === "annotate" && (
           <CapannShell
-            title="Annotate"
+            title="Mark screen"
             subtitle={
               drawModeEnabled ? undefined : "Pick a tool to start drawing"
             }
-            showBack
+            showBack={!annotatingCapture}
             onBack={goBackToChooser}
-            onClose={closeUi}
+            onClose={annotatingCapture ? hidePanelDuringCapture : closeUi}
             actions={annotateActions}
             position={panelPosition}
             onPositionChange={setPanelPosition}
+            closing={panelClosing}
           >
             <AnnotateControls
               onToolChange={handleToolChange}
@@ -2435,7 +2628,7 @@ export function OverlayApp() {
           </CapannShell>
         )}
 
-        {uiView === "record" && (
+        {panelView === "record" && (
           <CapannShell
             title="Record this tab"
             showBack={!recordingIsActive}
@@ -2443,9 +2636,12 @@ export function OverlayApp() {
             onClose={closeUi}
             position={panelPosition}
             onPositionChange={setPanelPosition}
+            closing={panelClosing}
           >
             <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
-              Capann's UI and annotations are hidden from the saved video.
+              {annotateWhileRecording
+                ? "Annotations appear in the saved video. Capann's panel is hidden — use the pencil bubble to bring it back."
+                : "Capann's UI and annotations are hidden from the saved video."}
             </p>
             <div style={{ display: "grid", gap: 10 }}>
               {(
@@ -2468,6 +2664,12 @@ export function OverlayApp() {
                   }
                 />
               ))}
+              <RecordOptionToggle
+                label="Mark screen"
+                checked={annotateWhileRecording}
+                disabled={recordingIsActive || startRequested}
+                onChange={setAnnotateWhileRecording}
+              />
             </div>
             {missingPermissions.length > 0 && !recordingIsActive && (
               <div style={{ marginTop: 12 }}>

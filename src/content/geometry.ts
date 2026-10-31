@@ -30,6 +30,115 @@ export interface Bounds {
   bottom: number;
 }
 
+/** Rotate `p` about `c` by `angle` radians (clockwise on screen, y down). */
+export function rotatePoint(p: Point, c: Point, angle: number): Point {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  return { x: c.x + dx * cos - dy * sin, y: c.y + dx * sin + dy * cos };
+}
+
+/**
+ * Rotation stored on the object itself. Only shapes carry one: strokes and
+ * arrows are rotated by moving their points, so their frame is always upright.
+ */
+export function shapeRotation(ann: AnnotationObject): number {
+  return ann.type === "rectangle" || ann.type === "ellipse"
+    ? (ann.rotation ?? 0)
+    : 0;
+}
+
+/** Center of the object's own (unrotated) bounds; the pivot for rotation. */
+export function annotationCenter(ann: AnnotationObject): Point {
+  const b = annotationBounds(ann);
+  return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 };
+}
+
+/** Map a page point into a shape's unrotated frame (identity for others). */
+function toLocal(point: Point, ann: AnnotationObject): Point {
+  const rotation = shapeRotation(ann);
+  return rotation === 0
+    ? point
+    : rotatePoint(point, annotationCenter(ann), -rotation);
+}
+
+/** Distance of the rotate handle above the selection box. */
+export const ROTATE_HANDLE_OFFSET = 26;
+const ROTATE_SNAP = Math.PI / 12; // 15°
+
+/** True when `point` is on a comment's tail tip (its drag handle). */
+export function isCommentTip(point: Point, ann: AnnotationObject): boolean {
+  return (
+    ann.type === "text" &&
+    Math.hypot(point.x - ann.position.x, point.y - ann.position.y) <= 10
+  );
+}
+
+/**
+ * Point a comment's tail at `tip` without moving the bubble. The first drag
+ * pins the bubble where it is currently drawn; until then it was placed
+ * automatically from the tip, and would otherwise chase the tip around.
+ */
+export function moveCommentTip(ann: TextAnnotation, tip: Point): TextAnnotation {
+  const { body } = textBubbleLayout(ann);
+  return {
+    ...ann,
+    position: tip,
+    bubble: ann.bubble ?? { x: body.left, y: body.top },
+  };
+}
+
+/** Text bubbles keep their tail anchored to the page, so they don't rotate. */
+export function isRotatable(ann: AnnotationObject): boolean {
+  return ann.type !== "text";
+}
+
+/** Page position of the rotate handle, or null for non-rotatable objects. */
+export function rotateHandlePoint(ann: AnnotationObject): Point | null {
+  if (!isRotatable(ann)) return null;
+  const b = annotationBounds(ann);
+  const c = annotationCenter(ann);
+  return rotatePoint(
+    { x: c.x, y: b.top - ROTATE_HANDLE_OFFSET },
+    c,
+    shapeRotation(ann),
+  );
+}
+
+export function isRotateHandle(point: Point, ann: AnnotationObject): boolean {
+  const h = rotateHandlePoint(ann);
+  return !!h && Math.hypot(point.x - h.x, point.y - h.y) <= 12;
+}
+
+/**
+ * Rotate an object by `delta` radians from the state it had when the drag
+ * began. Always called with that original object, never the previous preview,
+ * so repeated frames cannot accumulate error. `snap` rounds to 15° steps.
+ *
+ * - Shapes: add to their `rotation` (snapping the final angle).
+ * - Strokes and arrows: spin their points about the bounds center. An arrow's
+ *   `bend` is relative to its chord, so it needs no change.
+ */
+export function rotateAnnotation(
+  ann: AnnotationObject,
+  delta: number,
+  snap: boolean,
+): AnnotationObject {
+  if (ann.type === "rectangle" || ann.type === "ellipse") {
+    let rotation = (ann.rotation ?? 0) + delta;
+    if (snap) rotation = Math.round(rotation / ROTATE_SNAP) * ROTATE_SNAP;
+    return { ...ann, rotation };
+  }
+  const angle = snap ? Math.round(delta / ROTATE_SNAP) * ROTATE_SNAP : delta;
+  const c = annotationCenter(ann);
+  const spin = (p: Point) => rotatePoint(p, c, angle);
+  if ("points" in ann) return { ...ann, points: ann.points.map(spin) };
+  if (ann.type === "arrow")
+    return { ...ann, start: spin(ann.start), end: spin(ann.end) };
+  return ann;
+}
+
 export function annotationBounds(ann: AnnotationObject): Bounds {
   if (ann.type === "arrow") {
     const pts = [ann.start, ann.end, arrowControl(ann)];
@@ -70,6 +179,7 @@ export function shapeContains(
   padding = 0,
 ): boolean {
   const b = annotationBounds(shape);
+  point = toLocal(point, shape);
   if (shape.type === "ellipse") {
     const rx = Math.max(1, (b.right - b.left) / 2 + padding);
     const ry = Math.max(1, (b.bottom - b.top) / 2 + padding);
@@ -154,6 +264,15 @@ export function handlesForBounds(b: Bounds): Point[] {
   ];
 }
 
+/** The 8 transformer handles in page space, following a shape's rotation. */
+export function handlesForAnnotation(ann: AnnotationObject): Point[] {
+  const handles = handlesForBounds(annotationBounds(ann));
+  const rotation = shapeRotation(ann);
+  if (rotation === 0) return handles;
+  const c = annotationCenter(ann);
+  return handles.map((h) => rotatePoint(h, c, rotation));
+}
+
 /** Cursor for a transformer handle index. */
 export function cursorForHandle(handle: number): string {
   switch (handle) {
@@ -176,8 +295,7 @@ export function cursorForHandle(handle: number): string {
 
 /** Hit-test a point against the 8 transformer handles (10px radius). */
 export function handleAtPoint(point: Point, ann: AnnotationObject): number {
-  const b = annotationBounds(ann);
-  return handlesForBounds(b).findIndex(
+  return handlesForAnnotation(ann).findIndex(
     (h) => Math.hypot(point.x - h.x, point.y - h.y) <= 10,
   );
 }
@@ -202,6 +320,10 @@ export function resizeShape(
   point: Point,
 ): ShapeAnnotation {
   const b = annotationBounds(shape);
+  const rotation = shapeRotation(shape);
+  const pivot = annotationCenter(shape);
+  // Work in the shape's own frame so a rotated shape resizes along its axes.
+  if (rotation !== 0) point = rotatePoint(point, pivot, -rotation);
   let { left, top, right, bottom } = b;
   // Corners move two edges; edge handles move one.
   if (handle === 0 || handle === 2 || handle === 6) left = point.x;
@@ -217,7 +339,26 @@ export function resizeShape(
     if (handle === 4 || handle === 0 || handle === 1) top = bottom - 2;
     else bottom = top + 2;
   }
-  return { ...shape, start: { x: left, y: top }, end: { x: right, y: bottom } };
+  if (rotation === 0)
+    return {
+      ...shape,
+      start: { x: left, y: top },
+      end: { x: right, y: bottom },
+    };
+  // The dragged box is in the old frame. Its center moves, so re-express it
+  // around the new page-space center; the opposite edge stays put on screen.
+  const center = rotatePoint(
+    { x: (left + right) / 2, y: (top + bottom) / 2 },
+    pivot,
+    rotation,
+  );
+  const halfW = (right - left) / 2;
+  const halfH = (bottom - top) / 2;
+  return {
+    ...shape,
+    start: { x: center.x - halfW, y: center.y - halfH },
+    end: { x: center.x + halfW, y: center.y + halfH },
+  };
 }
 
 /**
@@ -299,7 +440,12 @@ export function translateAnnotation(
 ): AnnotationObject {
   const move = (p: Point): Point => ({ x: p.x + dx, y: p.y + dy });
   if ("points" in ann) return { ...ann, points: ann.points.map(move) };
-  if (ann.type === "text") return { ...ann, position: move(ann.position) };
+  if (ann.type === "text")
+    return {
+      ...ann,
+      position: move(ann.position),
+      ...(ann.bubble ? { bubble: move(ann.bubble) } : null),
+    };
   if (
     ann.type === "arrow" ||
     ann.type === "rectangle" ||
@@ -337,6 +483,8 @@ function distanceToPolyline(p: Point, points: Point[]): number {
 /** Hit-tests a point against an annotation object for the eraser tool. */
 export function hitTest(point: Point, ann: AnnotationObject): boolean {
   const tolerance = Math.max(10, ann.strokeWidth);
+  // Shapes are tested in their own unrotated frame.
+  point = toLocal(point, ann);
   switch (ann.type) {
     case "pencil":
     case "highlighter":

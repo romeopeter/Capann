@@ -13,8 +13,14 @@
  */
 
 import { DotsSixIcon } from "@phosphor-icons/react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+
+/** Panel fade-out duration; parents keep a closing panel mounted this long. */
+export const PANEL_FADE_MS = 140;
+
+/** How long the open-stagger class stays on (12 rows * 50ms + 180ms, rounded). */
+const ENTER_WINDOW_MS = 800;
 
 /** Explicit top/left once the panel has been dragged; null = docked top-right. */
 export interface ShellPosition {
@@ -54,6 +60,8 @@ export interface CapannShellProps {
    */
   position: ShellPosition | null;
   onPositionChange: (position: ShellPosition) => void;
+  /** Fade the panel out (parent keeps it mounted until the fade finishes). */
+  closing?: boolean;
   children: ReactNode;
 }
 
@@ -73,10 +81,18 @@ export function CapannShell({
   actions,
   position,
   onPositionChange,
+  closing = false,
   children,
 }: CapannShellProps) {
   const panelRef = useRef<HTMLElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  // Stagger only applies right after mount, so rows that appear later (status
+  // text, contextual options) are not delayed.
+  const [entering, setEntering] = useState(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setEntering(false), ENTER_WINDOW_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const onHeaderPointerDown = (e: React.PointerEvent) => {
     // Buttons handle their own clicks; only the header background drags.
@@ -132,6 +148,10 @@ export function CapannShell({
         WebkitBackdropFilter: "blur(20px)",
         font: "400 13px/1.45 Manrope, Inter, system-ui, sans-serif",
         boxShadow: "0 18px 52px rgba(0,0,0,.28)",
+        animation: closing
+          ? `panelOut ${PANEL_FADE_MS}ms cubic-bezier(0.2,0.8,0.2,1) both`
+          : undefined,
+        pointerEvents: closing ? "none" : undefined,
       }}
     >
       <header
@@ -227,9 +247,46 @@ export function CapannShell({
         </div>
       </header>
 
-      {children}
+      <div className={entering ? "capann-rows entering" : "capann-rows"}>
+        {children}
+      </div>
 
       <style>{`
+        /* Every panel opens the same way: its rows stagger in (--stagger-row,
+           50ms apart) for the first moments after mount. Rows that appear
+           later (status text, option rows) are not delayed. */
+        .capann-rows.entering > :not(:only-child),
+        .capann-rows.entering > :only-child > * {
+          animation: rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both;
+        }
+        .capann-rows.entering > :not(:only-child):nth-child(1),
+        .capann-rows.entering > :only-child > :nth-child(1) { animation-delay: 0ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(2),
+        .capann-rows.entering > :only-child > :nth-child(2) { animation-delay: 50ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(3),
+        .capann-rows.entering > :only-child > :nth-child(3) { animation-delay: 100ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(4),
+        .capann-rows.entering > :only-child > :nth-child(4) { animation-delay: 150ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(5),
+        .capann-rows.entering > :only-child > :nth-child(5) { animation-delay: 200ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(6),
+        .capann-rows.entering > :only-child > :nth-child(6) { animation-delay: 250ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(7),
+        .capann-rows.entering > :only-child > :nth-child(7) { animation-delay: 300ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(8),
+        .capann-rows.entering > :only-child > :nth-child(8) { animation-delay: 350ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(9),
+        .capann-rows.entering > :only-child > :nth-child(9) { animation-delay: 400ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(10),
+        .capann-rows.entering > :only-child > :nth-child(10) { animation-delay: 450ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(11),
+        .capann-rows.entering > :only-child > :nth-child(11) { animation-delay: 500ms; }
+        .capann-rows.entering > :not(:only-child):nth-child(12),
+        .capann-rows.entering > :only-child > :nth-child(12) { animation-delay: 550ms; }
+        @keyframes panelOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
+        }
         @keyframes rowIn {
           from {
             opacity: 0;

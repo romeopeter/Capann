@@ -17,15 +17,22 @@
  * the video; the chip must stay in it. The chip's surface lives in
  * `#capann-recording-host`, a sibling of `#capann-host`.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   ArrowsOutSimpleIcon,
   PauseIcon,
+  PencilSimpleIcon,
   PlayIcon,
-  StopIcon,
   TrashIcon,
 } from "@phosphor-icons/react";
+import { annotateBridge } from "./annotate-bridge";
 import type {
   BackgroundToContentMessage,
   ContentToBackgroundMessage,
@@ -73,10 +80,6 @@ const CHIP_CSS = `
     outline: 2px solid #A78BFA;
     outline-offset: 2px;
   }
-  @keyframes capann-rec-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.45; transform: scale(0.82); }
-  }
 `;
 
 const CAMERA_BUBBLE_SIZES = { S: 132, M: 196, L: 280 } as const;
@@ -90,7 +93,8 @@ const NEXT_CAMERA_BUBBLE_SIZE: Record<CameraBubbleSize, CameraBubbleSize> = {
 // The chip lives in its own shadow root, so the main overlay's CSS custom
 // properties are not inherited. These literals mirror design-tokens.md.
 const styles: Record<string, CSSProperties> = {
-  chip: {
+  // Left-edge column: optional annotation bubble above the recording pill.
+  dock: {
     position: "fixed",
     left: 16,
     top: "50%",
@@ -98,30 +102,61 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
+    gap: 10,
+    pointerEvents: "none",
+    userSelect: "none",
+    fontFamily: "Manrope, Inter, system-ui, sans-serif",
+  },
+  bubble: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 44,
+    height: 44,
+    padding: 0,
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(28,28,32,0.72)",
+    backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)",
+    boxShadow: "0 12px 40px rgba(0,0,0,0.38)",
+    color: "#F5F5F7",
+    cursor: "pointer",
+    pointerEvents: "auto",
+    transition: "background 120ms ease, color 120ms ease",
+  },
+  chip: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
     gap: 6,
-    padding: "10px 8px",
-    borderRadius: 20,
+    padding: "8px 8px 10px",
+    borderRadius: 999,
     background: "rgba(28,28,32,0.72)",
     backdropFilter: "blur(20px)",
     WebkitBackdropFilter: "blur(20px)",
     border: "1px solid rgba(255,255,255,0.08)",
     boxShadow: "0 12px 40px rgba(0,0,0,0.38)",
     color: "#F5F5F7",
-    fontFamily: "Manrope, Inter, system-ui, sans-serif",
     pointerEvents: "auto",
-    userSelect: "none",
   },
-  recRow: {
-    display: "flex",
+  stop: {
+    display: "inline-flex",
     alignItems: "center",
-    gap: 6,
-    padding: "2px 4px 0",
-  },
-  dot: {
-    width: 8,
-    height: 8,
+    justifyContent: "center",
+    width: 40,
+    height: 40,
+    padding: 0,
+    border: 0,
     borderRadius: "50%",
-    flex: "0 0 auto",
+    background: "#F5F5F7",
+    cursor: "pointer",
+  },
+  stopGlyph: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+    background: "#EF4444",
   },
   time: {
     fontSize: 12,
@@ -129,6 +164,7 @@ const styles: Record<string, CSSProperties> = {
     fontVariantNumeric: "tabular-nums",
     letterSpacing: "0.02em",
     lineHeight: 1,
+    padding: "2px 0 0",
   },
   divider: {
     width: 20,
@@ -247,6 +283,10 @@ export function RecordingChip() {
   const paused = status.state === "paused";
   const starting = status.state === "starting";
   const nextCameraSize = NEXT_CAMERA_BUBBLE_SIZE[cameraSize];
+  const annotate = useSyncExternalStore(
+    annotateBridge.subscribe,
+    annotateBridge.getSnapshot,
+  );
 
   // Decode the recorder's JPEG and paint it into the chip's canvas. A canvas
   // keeps the preview independent of the page's CSP for `img-src data:` and
@@ -369,50 +409,83 @@ export function RecordingChip() {
   return (
     <>
       <style>{CHIP_CSS}</style>
-      <div style={styles.chip}>
-        <div style={styles.recRow}>
+      <div style={styles.dock}>
+        {annotate.available && (
+          <button
+            type="button"
+            className="capann-rec-btn"
+            style={{
+              ...styles.bubble,
+              // Same surface as the chip so the bubble reads as part of it on
+              // any page; the open state only brightens the surface.
+              ...(annotate.panelOpen
+                ? { background: "rgba(58,58,66,0.88)" }
+                : null),
+            }}
+            aria-label={
+              annotate.panelOpen
+                ? "Hide Mark screen panel"
+                : "Show Mark screen panel"
+            }
+            aria-pressed={annotate.panelOpen}
+            title={
+              annotate.panelOpen
+                ? "Hide Mark screen panel"
+                : "Show Mark screen panel"
+            }
+            onClick={() => annotateBridge.togglePanel()}
+          >
+            <PencilSimpleIcon
+              size={20}
+              weight={annotate.panelOpen ? "fill" : "bold"}
+            />
+          </button>
+        )}
+        <div style={styles.chip}>
+          <button
+            type="button"
+            className="capann-rec-btn"
+            style={styles.stop}
+            aria-label="Stop and save recording"
+            title="Stop and save recording"
+            onClick={() => finish({ kind: "record-stop" })}
+            disabled={finishing}
+          >
+            <span style={styles.stopGlyph} />
+          </button>
           <span
             style={{
-              ...styles.dot,
-              background: paused ? "#A78BFA" : "#EF4444",
-              animation: paused
-                ? "none"
-                : "capann-rec-pulse 1.6s ease-in-out infinite",
+              ...styles.time,
+              color: paused ? "#A78BFA" : "#F5F5F7",
             }}
-          />
-          <span style={styles.time} aria-label="Elapsed recording time">
+            aria-label="Elapsed recording time"
+          >
             {formatDuration(elapsedMs)}
           </span>
+          <ChipButton
+            label={paused ? "Resume recording" : "Pause recording"}
+            onClick={() =>
+              send(
+                paused ? { kind: "record-resume" } : { kind: "record-pause" },
+              )
+            }
+            disabled={starting || finishing}
+          >
+            {paused ? (
+              <PlayIcon size={18} weight="fill" />
+            ) : (
+              <PauseIcon size={18} weight="fill" />
+            )}
+          </ChipButton>
+          <div style={styles.divider} />
+          <ChipButton
+            label="Discard recording"
+            onClick={() => finish({ kind: "record-discard" })}
+            disabled={finishing}
+          >
+            <TrashIcon size={18} weight="fill" />
+          </ChipButton>
         </div>
-        <div style={styles.divider} />
-        <ChipButton
-          label={paused ? "Resume recording" : "Pause recording"}
-          onClick={() =>
-            send(paused ? { kind: "record-resume" } : { kind: "record-pause" })
-          }
-          disabled={starting || finishing}
-        >
-          {paused ? (
-            <PlayIcon size={18} weight="fill" />
-          ) : (
-            <PauseIcon size={18} weight="fill" />
-          )}
-        </ChipButton>
-        <ChipButton
-          label="Stop and save recording"
-          onClick={() => finish({ kind: "record-stop" })}
-          disabled={finishing}
-          color="#86EFAC"
-        >
-          <StopIcon size={18} weight="fill" />
-        </ChipButton>
-        <ChipButton
-          label="Discard recording"
-          onClick={() => finish({ kind: "record-discard" })}
-          disabled={finishing}
-        >
-          <TrashIcon size={18} weight="fill" />
-        </ChipButton>
       </div>
       {hasFrame && (
         <div

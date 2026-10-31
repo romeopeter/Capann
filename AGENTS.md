@@ -44,8 +44,8 @@ implementation:
 - **Highlighter**: Translucent broad strokes
 - **Arrow**: Drag-to-draw arrows with adjustable size and four head styles — triangle, chevron, stick, and **bender** (curved connector)
 - **Shapes**: Rectangle and ellipse with an optional fill
-- **Text Callouts**: Click to place a Figma-style comment bubble; click it again with the text tool to edit
-- **Select**: Hit-test the topmost annotation, then move it or resize it with handles
+- **Comment** (tool id `text`; Phosphor chat-circle icon): Click to place a Figma-style comment bubble; click it again with the Comment tool to edit
+- **Select**: Hit-test the topmost annotation, then move it, resize it with handles, or rotate it with the knob above the box (Shift snaps to 15°). Shapes store an optional `rotation`; strokes and arrows are rotated by moving their points. Text notes do not rotate
 - **Laser Pointer**: Fading cursor trail that doesn't block page interaction
 - **Spotlight**: Dims everything except a soft circle around the cursor without blocking clicks
 - **Eraser**: Remove individual annotations, with a ring cursor matching its reach
@@ -137,9 +137,15 @@ meant to appear in the recording.
 
 | Path | How it hides | Restores to |
 |---|---|---|
-| Recording | `captureHidden` → host style + subtree wrapper | — |
-| PNG export | local host style inside `savePng` | `captureHidden` |
+| Recording | `captureHidden` → host style + subtree wrapper (kept visible, panel unmounted, when **Annotate screen** is on) | — |
+| PNG export | local host style inside `savePng` | `overlayVisible` (`!captureHidden \|\| annotateWhileRecording`) |
 | Recording chip | never hidden — separate `#capann-recording-host` | — |
+
+**Annotate screen** (Record view toggle) is the one opt-in exception: annotations
+are meant to appear in the video, so the host stays visible while the Capann panel
+is unmounted (`shellView`) until the chip's pencil bubble opens it. The bubble lives
+in the chip host and talks to `OverlayApp` through `src/content/annotate-bridge.ts`.
+The panel must still never be on screen at the moment the stream ID is minted.
 
 Recording and export deliberately use separate mechanisms: export is a one-shot
 hide, recording is a lifecycle state. Merging them reintroduces the bug above.
@@ -224,8 +230,10 @@ learn/                     Accurate handbook: architecture, annotations, recordi
 - `Enter` sends, `Shift+Enter` adds a newline, clicking away sends, `Esc` cancels
 - Bubbles are 140–280px wide and grow vertically; the composer scrolls after about six lines while committed notes render every line
 - The composer and canvas share `text-bubble.ts` layout, so a note does not move or reflow on commit
-- The tail is filled with the palette color and flips sides near viewport edges; hovering with the text tool draws only a subtle outline, never a scale effect
+- The tail and the composer's send button use the panel surface, not the palette color; only the send arrow is violet. The tail flips sides near viewport edges; hovering with the text tool draws only a subtle outline, never a scale effect
 - Clicking a committed note with the text tool edits it in place; empty commits delete an existing note (undoable)
+- Body and tail are one outline (`bubbleOutlinePath`), filled and stroked once, so there is no seam at the tail base
+- With the Select tool, a selected comment shows a knob on its tail tip. Dragging it re-aims the pointer while the bubble stays put: the first drag pins the bubble (`TextAnnotation.bubble`), and the tail then leaves from whichever edge faces the tip. Comments without `bubble` keep automatic above/below placement
 
 **PNG Export**: `savePng` hides the shadow host synchronously, waits two animation frames, captures the tab, restores visibility from `captureHidden`, then draws annotations **exactly once** onto the screenshot. The screenshot is annotation-free by construction; if the hide step is ever missing, the capture already contains the annotations and they get drawn a second time.
 

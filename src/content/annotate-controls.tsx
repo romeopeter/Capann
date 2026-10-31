@@ -8,6 +8,8 @@
  * actions slot; timer and screen-mask chips live at the OverlayApp level.
  */
 
+import { useRef } from "react";
+import { ChatCircleIcon, PaletteIcon } from "@phosphor-icons/react";
 import type { ArrowHeadStyle, ToolId } from "../shared/types";
 import { TOOL_LABELS } from "../shared/types";
 import { TOOL_ICONS } from "./icons";
@@ -35,6 +37,165 @@ const HEAD_STYLES: { id: ArrowHeadStyle; label: string }[] = [
 ];
 
 const SHAPE_TOOLS: ToolId[] = ["rectangle", "ellipse"];
+
+const SIZE_MIN = 1;
+const SIZE_MAX = 100;
+
+/**
+ * Brush-size slider. The track is a wedge that thickens left to right, so the
+ * control previews what it does; the violet fill and white thumb follow the
+ * design tokens. Replaces the native range input, which could not be styled to
+ * match.
+ *
+ * Keeps the contract the native input had: `onEditStart` fires on pointer down
+ * or focus and `onEditComplete` on release or blur, so one drag (or one burst
+ * of key presses) stays a single undo step upstream.
+ */
+function SizeSlider({
+  value,
+  onChange,
+  onEditStart,
+  onEditComplete,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onEditStart?: () => void;
+  onEditComplete?: () => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const fraction = (value - SIZE_MIN) / (SIZE_MAX - SIZE_MIN);
+
+  const setFromPointer = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onChange(Math.round(SIZE_MIN + t * (SIZE_MAX - SIZE_MIN)));
+  };
+
+  const wedge = "polygon(0 calc(50% - 1px), 100% 0, 100% 100%, 0 calc(50% + 1px))";
+
+  return (
+    <div
+      role="slider"
+      tabIndex={0}
+      aria-label="Size"
+      aria-valuemin={SIZE_MIN}
+      aria-valuemax={SIZE_MAX}
+      aria-valuenow={value}
+      className="capann-size-slider"
+      onFocus={() => onEditStart?.()}
+      onBlur={() => {
+        if (!draggingRef.current) onEditComplete?.();
+      }}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        draggingRef.current = true;
+        onEditStart?.();
+        setFromPointer(e.clientX);
+      }}
+      onPointerMove={(e) => {
+        if (draggingRef.current) setFromPointer(e.clientX);
+      }}
+      onPointerUp={(e) => {
+        draggingRef.current = false;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        onEditComplete?.();
+      }}
+      onPointerCancel={() => {
+        draggingRef.current = false;
+        onEditComplete?.();
+      }}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 10 : 1;
+        let next = value;
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") next += step;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next -= step;
+        else if (e.key === "Home") next = SIZE_MIN;
+        else if (e.key === "End") next = SIZE_MAX;
+        else return;
+        e.preventDefault();
+        onChange(Math.min(SIZE_MAX, Math.max(SIZE_MIN, next)));
+      }}
+      style={{
+        position: "relative",
+        flex: 1,
+        height: "20px",
+        cursor: "pointer",
+        touchAction: "none",
+        outline: "none",
+      }}
+    >
+      <div
+        ref={trackRef}
+        style={{
+          position: "absolute",
+          left: "7px",
+          right: "7px",
+          top: "50%",
+          height: "12px",
+          transform: "translateY(-50%)",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            clipPath: wedge,
+            background: "rgba(255,255,255,0.12)",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: `${fraction * 100}%`,
+              background: "#A78BFA",
+            }}
+          />
+        </div>
+        <div
+          className="capann-size-thumb"
+          style={{
+            position: "absolute",
+            left: `${fraction * 100}%`,
+            top: "50%",
+            width: "14px",
+            height: "14px",
+            transform: "translate(-50%, -50%)",
+            borderRadius: "999px",
+            background: "#F5F5F7",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Tool glyph. Comment uses Phosphor's chat-circle (bold weight, to match the
+ * 1.7px stroke of the other tool icons at 16px); the rest are the path icons
+ * in icons.ts.
+ */
+function ToolIcon({ tool, active }: { tool: ToolId; active: boolean }) {
+  const color = active ? "#A78BFA" : "#8B8B93";
+  if (tool === "text")
+    return <ChatCircleIcon size={16} weight="bold" color={color} />;
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d={TOOL_ICONS[tool]}
+        stroke={color}
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 export interface AnnotateControlsProps {
   onToolChange: (tool: ToolId) => void;
@@ -85,6 +246,11 @@ export function AnnotateControls({
 }: AnnotateControlsProps) {
   /** A tool only counts as active while draw mode is on. */
   const isToolActive = (t: ToolId) => drawModeEnabled && currentTool === t;
+  // A color outside the swatch row came from the custom picker; the palette
+  // icon takes that color so the picker shows what is currently selected.
+  const isCustomColor = !CORE_COLORS.some(
+    (c) => c.toLowerCase() === currentColor.toLowerCase(),
+  );
 
   const handleToolSelect = (tool: ToolId) => {
     // Clicking the active tool deselects it: annotations stay on screen but
@@ -116,8 +282,6 @@ export function AnnotateControls({
           display: "grid",
           gridTemplateColumns: "repeat(6,1fr)",
           gap: "4px",
-          animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-          animationDelay: "50ms",
         }}
       >
         {MAIN_TOOLS.map((tool) => (
@@ -146,15 +310,7 @@ export function AnnotateControls({
                 e.currentTarget.style.background = "transparent";
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path
-                d={TOOL_ICONS[tool]}
-                stroke={isToolActive(tool) ? "#A78BFA" : "#8B8B93"}
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <ToolIcon tool={tool} active={isToolActive(tool)} />
           </button>
         ))}
       </div>
@@ -165,8 +321,6 @@ export function AnnotateControls({
           display: "grid",
           gridTemplateColumns: "repeat(4,1fr)",
           gap: "4px",
-          animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-          animationDelay: "100ms",
         }}
       >
         {EXTRA_TOOLS.map((tool) => (
@@ -195,15 +349,7 @@ export function AnnotateControls({
                 e.currentTarget.style.background = "transparent";
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path
-                d={TOOL_ICONS[tool]}
-                stroke={isToolActive(tool) ? "#A78BFA" : "#8B8B93"}
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <ToolIcon tool={tool} active={isToolActive(tool)} />
           </button>
         ))}
       </div>
@@ -214,8 +360,6 @@ export function AnnotateControls({
           display: "flex",
           flexDirection: "column",
           gap: "8px",
-          animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-          animationDelay: "150ms",
         }}
       >
         <div
@@ -257,12 +401,14 @@ export function AnnotateControls({
               flex: "none",
               overflow: "hidden",
               borderRadius: "999px",
-              border: "1px solid rgba(255,255,255,0.25)",
-              background:
-                "conic-gradient(red, yellow, lime, aqua, blue, magenta, red)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: isCustomColor ? currentColor : "#F5F5F7",
               cursor: "pointer",
             }}
           >
+            <PaletteIcon size={20} weight={isCustomColor ? "fill" : "regular"} />
             <input
               aria-label="Choose custom annotation color"
               type="color"
@@ -288,21 +434,13 @@ export function AnnotateControls({
           alignItems: "center",
           gap: "9px",
           padding: "0 4px",
-          animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-          animationDelay: "200ms",
         }}
       >
-        <input
-          type="range"
-          min="1"
-          max="100"
+        <SizeSlider
           value={currentWidth}
-          onChange={(e) => onWidthChange(Number(e.target.value))}
-          onFocus={onWidthEditStart}
-          onPointerDown={onWidthEditStart}
-          onPointerUp={onWidthEditComplete}
-          onBlur={onWidthEditComplete}
-          style={{ flex: 1, accentColor: "#A78BFA", height: "4px" }}
+          onChange={onWidthChange}
+          onEditStart={onWidthEditStart}
+          onEditComplete={onWidthEditComplete}
         />
         <span
           style={{
@@ -424,8 +562,6 @@ export function AnnotateControls({
             gap: "7px",
             paddingTop: "11px",
             borderTop: "1px solid rgba(255,255,255,0.08)",
-            animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-            animationDelay: "250ms",
           }}
         >
           <span
@@ -533,8 +669,6 @@ export function AnnotateControls({
         style={{
           display: "flex",
           gap: "6px",
-          animation: "rowIn 180ms cubic-bezier(0.2,0.8,0.2,1) both",
-          animationDelay: "300ms",
         }}
       >
         <button
