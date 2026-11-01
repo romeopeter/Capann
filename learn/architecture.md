@@ -16,6 +16,7 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 ## Main code areas
 
 - `src/shared/types.ts`: annotation data, tool ids, recording status/stages/error codes, and every message contract between the overlay, service worker, and offscreen recorder.
+- `src/shared/features.ts`: edition gate and Premium lock copy. The edition is injected at build time from `capann.config.json` (or `npm run build:free` / `build:premium`); in the free edition `RECORDING_ENABLED` is false, so recording is locked across the UI and worker.
 - `src/content/overlay.tsx`: Shadow DOM host and React root bootstrap.
 - `src/content/geometry.ts`: bounds, hit tests, and spatial transformations.
 - `src/content/render.ts`: drawing annotation data to a canvas.

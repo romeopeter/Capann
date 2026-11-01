@@ -115,17 +115,35 @@ async function testWorker() {
 
   assert(typeof onMessage === "function", "worker registered its message listener");
 
+  let keepOpen = false;
+  let timeoutId = 0;
   const response = await new Promise((resolve) => {
-    const keepOpen = onMessage(
+    const done = (value) => {
+      clearTimeout(timeoutId);
+      resolve(value);
+    };
+    keepOpen = onMessage(
       { kind: "record-start", camera: true, microphone: true, tabAudio: true },
       { tab: { id: 7 } },
-      resolve,
+      done,
     );
-    assert(keepOpen === true, "record-start is handled asynchronously");
-    setTimeout(() => resolve({ __timeout: true }), 4000);
+    timeoutId = setTimeout(() => resolve({ __timeout: true }), 4000);
   });
 
+  // The free edition deliberately rejects recording. Assert the lock instead of
+  // exercising a recorder lifecycle that the build cannot start.
+  const locked =
+    response.ok === false &&
+    typeof response.error === "string" &&
+    response.error.includes("Premium");
+  if (locked) {
+    assert(keepOpen === false, "free build answers record-start synchronously");
+    assert(!offscreenCommand, "free build does not create an offscreen recorder");
+    return;
+  }
+
   const elapsed = Date.now() - started;
+  assert(keepOpen === true, "record-start is handled asynchronously");
   assert(!response.__timeout, `start answered in ${elapsed}ms (the bug hung for 5s)`);
   assert(!!offscreenCommand, "worker sent an offscreen command");
   assert(

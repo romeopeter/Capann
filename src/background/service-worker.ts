@@ -9,6 +9,7 @@ import type {
   RecordingStatus,
   RecordingStage,
 } from "../shared/types";
+import { RECORDING_ENABLED, RECORDING_LOCKED_ERROR } from "../shared/features";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.session.setAccessLevel({
@@ -703,6 +704,10 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
     if (message.kind === "record-prewarm") {
+      if (!RECORDING_ENABLED) {
+        sendResponse({ ok: false, error: RECORDING_LOCKED_ERROR });
+        return false;
+      }
       void prewarmRecorder(sendResponse);
       return true;
     }
@@ -711,6 +716,10 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
     if (message.kind === "record-request-permission") {
+      if (!RECORDING_ENABLED) {
+        sendResponse({ ok: false, error: RECORDING_LOCKED_ERROR });
+        return false;
+      }
       const tabId = sender.tab?.id;
       if (tabId === undefined) {
         sendResponse({
@@ -783,6 +792,10 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
     if (message.kind === "record-start") {
+      if (!RECORDING_ENABLED) {
+        sendResponse({ ok: false, error: RECORDING_LOCKED_ERROR });
+        return false;
+      }
       const tabId = sender.tab?.id;
       if (tabId === undefined) {
         sendResponse({

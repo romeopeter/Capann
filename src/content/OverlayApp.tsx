@@ -117,6 +117,12 @@ import { CapannShell, PANEL_FADE_MS, SHELL_BUTTON } from "./shell";
 import type { ShellPosition } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
+import {
+  RECORDING_ENABLED,
+  RECORDING_PREMIUM_BADGE,
+  RECORDING_PREMIUM_BODY,
+  RECORDING_PREMIUM_TITLE,
+} from "../shared/features";
 import { annotateBridge } from "./annotate-bridge";
 import {
   eraserCursor,
@@ -124,7 +130,7 @@ import {
   setCanvasCursor,
   toolCursor,
 } from "./cursors";
-import { PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
+import { LockIcon, PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "pencil",
@@ -1906,6 +1912,9 @@ export function OverlayApp() {
   }, []);
 
   const prepareRecorder = useCallback(async () => {
+    // Free build: recording is Premium. Do not create an offscreen recorder or
+    // ask for camera/microphone access for a surface that cannot start.
+    if (!RECORDING_ENABLED) return;
     setRecorderPreparation("preparing");
     setRecorderPreparationError("");
     try {
@@ -1932,7 +1941,7 @@ export function OverlayApp() {
   }, [refreshPermissions]);
 
   const requestPermissions = useCallback(async () => {
-    if (permissionRequested) return;
+    if (!RECORDING_ENABLED || permissionRequested) return;
     setPermissionRequested(true);
     try {
       await chrome.runtime.sendMessage({
@@ -1948,7 +1957,10 @@ export function OverlayApp() {
   }, [permissionRequested, recordOptions.camera, recordOptions.microphone]);
 
   const startRecording = useCallback(async () => {
-    if (startRequested) return;
+    // Free build guard. The Record view shows the Premium lock instead of the
+    // Start action, but keep the callback closed too so a stale event cannot
+    // reach the worker's record-start handler.
+    if (!RECORDING_ENABLED || startRequested) return;
     if (recorderPreparation !== "ready") {
       void prepareRecorder();
       return;
@@ -2016,7 +2028,12 @@ export function OverlayApp() {
   // Getting the recorder ready up front means the tab stream ID can be handed
   // over immediately, before Chrome's short-lived IDs expire.
   useEffect(() => {
-    if (uiView !== "record" || recorderPreparation !== "idle") return;
+    if (
+      !RECORDING_ENABLED ||
+      uiView !== "record" ||
+      recorderPreparation !== "idle"
+    )
+      return;
     void prepareRecorder();
   }, [uiView, recorderPreparation, prepareRecorder]);
 
@@ -2569,9 +2586,37 @@ export function OverlayApp() {
                 }}
                 style={{ ...SHELL_BUTTON, textAlign: "left" }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <RecordIcon size={20} weight="fill" />
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                  }}
+                >
+                  {RECORDING_ENABLED ? (
+                    <RecordIcon size={20} weight="fill" />
+                  ) : (
+                    <LockIcon size={20} weight="fill" color="#86EFAC" />
+                  )}
                   <span>Record</span>
+                  {!RECORDING_ENABLED && (
+                    <span
+                      style={{
+                        marginLeft: "auto",
+                        padding: "2px 7px",
+                        borderRadius: 999,
+                        background: "rgba(134,239,172,0.12)",
+                        color: "#86EFAC",
+                        fontSize: 9,
+                        fontWeight: 700,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {RECORDING_PREMIUM_BADGE}
+                    </span>
+                  )}
                 </div>
                 <span
                   style={{
@@ -2638,6 +2683,82 @@ export function OverlayApp() {
             onPositionChange={setPanelPosition}
             closing={panelClosing}
           >
+            {!RECORDING_ENABLED && (
+              <div
+                style={{
+                  display: "grid",
+                  justifyItems: "center",
+                  gap: 10,
+                  padding: "6px 4px 2px",
+                  textAlign: "center",
+                }}
+              >
+                <span
+                  style={{
+                    display: "grid",
+                    placeItems: "center",
+                    width: 46,
+                    height: 46,
+                    borderRadius: "50%",
+                    background: "rgba(134,239,172,0.12)",
+                    border: "1px solid rgba(134,239,172,0.28)",
+                    color: "#86EFAC",
+                  }}
+                >
+                  <LockIcon size={22} weight="fill" />
+                </span>
+                <span
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    background: "rgba(134,239,172,0.12)",
+                    color: "#86EFAC",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {RECORDING_PREMIUM_BADGE}
+                </span>
+                <h3
+                  style={{
+                    margin: 0,
+                    color: "#F5F5F7",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    lineHeight: 1.3,
+                  }}
+                >
+                  {RECORDING_PREMIUM_TITLE}
+                </h3>
+                <p
+                  style={{
+                    margin: 0,
+                    color: "#8B8B93",
+                    fontSize: 11,
+                    lineHeight: 1.55,
+                  }}
+                >
+                  {RECORDING_PREMIUM_BODY}
+                </p>
+                <button
+                  onClick={() => {
+                    setUiView("annotate");
+                    handleDrawModeToggle(false);
+                  }}
+                  style={{
+                    ...SHELL_BUTTON,
+                    width: "100%",
+                    marginTop: 4,
+                  }}
+                >
+                  Mark screen instead
+                </button>
+              </div>
+            )}
+            {RECORDING_ENABLED && (
+              <>
             <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
               {annotateWhileRecording
                 ? "Annotations appear in the saved video. Capann's panel is hidden — use the pencil bubble to bring it back."
@@ -2799,6 +2920,8 @@ export function OverlayApp() {
               <p role="status" style={{ color: "#8B8B93", margin: "14px 0 0" }}>
                 Recording discarded.
               </p>
+            )}
+              </>
             )}
           </CapannShell>
         )}

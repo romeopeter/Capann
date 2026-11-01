@@ -16,13 +16,24 @@
  */
 
 import { build, context } from 'esbuild';
-import { mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const dist = path.join(root, 'dist');
 const watch = process.argv.includes('--watch');
+
+// Edition: `--edition=free|premium` overrides capann.config.json, which holds
+// the default for the checked-out branch (dev/premium: premium, free: free).
+const EDITIONS = ['free', 'premium'];
+const config = JSON.parse(readFileSync(path.join(root, 'capann.config.json'), 'utf8'));
+const editionArg = process.argv.find((arg) => arg.startsWith('--edition='));
+const edition = editionArg ? editionArg.slice('--edition='.length) : config.edition;
+if (!EDITIONS.includes(edition)) {
+  console.error(`Unknown edition "${edition}". Use one of: ${EDITIONS.join(', ')}.`);
+  process.exit(1);
+}
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(path.join(dist, 'icons'), { recursive: true });
@@ -53,13 +64,14 @@ const options = {
   logLevel: 'info',
   jsx: 'automatic',
   jsxDev: false,
+  define: { __CAPANN_EDITION__: JSON.stringify(edition) },
 };
 
 if (watch) {
   const ctx = await context(options);
   await ctx.watch();
-  console.log('Watching for changes...');
+  console.log(`Watching for changes (${edition} edition)...`);
 } else {
   await build(options);
-  console.log(`Built extension into ${dist}`);
+  console.log(`Built ${edition} edition into ${dist}`);
 }

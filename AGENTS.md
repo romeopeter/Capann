@@ -15,27 +15,28 @@ Everything runs locally. No network calls, no accounts, no uploads.
 
 ## Branch Strategy
 
-`dev` is the integration branch and holds **all features**. The edition branches
-are cut/merged from `dev` and differ only in feature gates, not in the shared
-implementation:
+`dev` is the integration branch and holds **all features plus the edition
+gate**. The edition is a build-time setting, so all three branches share the same
+code and differ only in `capann.config.json`:
 
-| Branch | Purpose | Recording |
-|---|---|---|
-| `dev` | Integration branch; all features | Enabled |
-| `free` | Free edition | Locked behind Premium |
-| `premium` | Paid edition | Enabled |
+| Branch | Purpose | `capann.config.json` edition | Recording |
+|---|---|---|---|
+| `dev` | Integration branch; build either edition | `premium` (default) | Switchable |
+| `free` | Free edition | `free` | Locked behind Premium |
+| `premium` | Paid edition | `premium` | Enabled |
 
+- `scripts/build.mjs` reads `capann.config.json` and injects it as
+  `__CAPANN_EDITION__` (esbuild `define`). `--edition=free|premium` overrides it,
+  which is what `npm run build:free` / `build:premium` and
+  `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
+- `src/shared/features.ts` derives `RECORDING_ENABLED` from the edition. When it is
+  false, the chooser and Record view show the mint Premium lock, and the service
+  worker rejects prewarm/permission/start. Annotations remain free forever.
 - Land shared behavior on `dev` first, then merge `dev` into both edition
-  branches.
-- Keep the free gate isolated and explicit. On `free`, `src/shared/features.ts`
-  sets `RECORDING_ENABLED = false`; the chooser and Record view show the mint
-  Premium lock, and the service worker rejects prewarm/permission/start.
-  Annotations remain free forever.
-- `premium` includes the same feature-complete code as `dev` without the free
-  gate.
-- Do not merge the free gate back into `dev` or `premium`. Rebuild and test each
-  branch separately; `dist/` is gitignored and only reflects the checked-out
-  branch's last build.
+  branches. The only edition-specific change is `capann.config.json`; never
+  hardcode an edition in source.
+- `dist/` is gitignored and only reflects the last build, so check the
+  `Built <edition> edition` line before loading it in Chrome.
 
 ## Core Features
 
@@ -69,7 +70,7 @@ implementation:
 - **Status reporting**: The chip and the Chrome action badge/title show recording or paused state
 - **Non-blocking degradation**: Missing camera, microphone, or tab audio never blocks recording; unavailable inputs are reported in the Record view
 - **Explicit grant flow**: A visible extension page obtains camera/microphone permission, since offscreen documents cannot prompt
-- **Free branch gate**: `src/shared/features.ts` sets `RECORDING_ENABLED = false`; the chooser and Record view show a mint Premium lock, and the service worker rejects prewarm/permission/start. Annotations remain free forever. The `premium` branch keeps recording enabled
+- **Edition gate**: in the free edition `src/shared/features.ts` sets `RECORDING_ENABLED` to false; the chooser and Record view show a mint Premium lock, and the service worker rejects prewarm/permission/start. Annotations remain free forever. The edition comes from `capann.config.json` or `npm run build:free` / `build:premium`
 
 ## Keyboard Shortcuts
 
@@ -376,8 +377,10 @@ Do not switch the offscreen or permission bundles to ESM: their HTML loads them 
 
 ```bash
 npm install          # Install dependencies
-npm run build        # Type check + bundle to dist/
-npm run watch        # Auto-rebuild on file changes
+npm run build        # Type check + bundle to dist/ (edition from capann.config.json)
+npm run build:free   # ...as the free edition (recording locked)
+npm run build:premium # ...as the premium edition
+npm run watch        # Auto-rebuild on file changes (also watch:free / watch:premium)
 npm run typecheck    # Type check only
 ```
 

@@ -6,7 +6,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && node scripts/build.mjs",
-    "watch": "node scripts/build.mjs --watch"
+    "build:free": "npm run typecheck && node scripts/build.mjs --edition=free",
+    "build:premium": "npm run typecheck && node scripts/build.mjs --edition=premium",
+    "watch": "node scripts/build.mjs --watch",
+    "watch:free": "node scripts/build.mjs --watch --edition=free",
+    "watch:premium": "node scripts/build.mjs --watch --edition=premium"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
