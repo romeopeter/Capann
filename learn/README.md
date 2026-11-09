@@ -6,6 +6,7 @@ This handbook explains how Capann is put together and how to make changes that f
 
 - [Architecture](architecture.md) — extension entrypoints, overlay, and storage.
 - [Annotations](annotations.md) — annotation types, drawing, hit testing, selection, and history.
+- [Canvas and memory](canvas.md) — why the overlay canvases are viewport-sized, what a canvas costs, the hard limits, and how annotations scroll with the page.
 - [Recording](recording.md) — in-page record setup, capture pipeline, visibility, and lifecycle.
 - [Making changes](making-changes.md) — a practical workflow for extending the project and keeping these notes current.
 

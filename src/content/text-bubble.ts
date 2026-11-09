@@ -26,7 +26,13 @@ export const TEXT_BUBBLE = {
   fontPerWidth: 0.16,
 } as const;
 
+/**
+ * The area a bubble is kept inside, in the same (page) coordinates as the
+ * anchor. `left`/`top` default to 0.
+ */
 export interface BubbleViewport {
+  left?: number;
+  top?: number;
   width: number;
   height: number;
 }
@@ -207,13 +213,34 @@ export function wrapBubbleText(
   return lines.length > 0 ? lines : [""];
 }
 
-function defaultViewport(): BubbleViewport {
+/**
+ * Default placement area for committed comments: the whole page, unbounded
+ * below. It does not depend on the scroll position, so an auto-placed bubble
+ * keeps its shape while the page scrolls instead of flipping at screen edges.
+ */
+export function pageViewport(): BubbleViewport {
+  if (typeof window === "undefined") return { width: 1024, height: Infinity };
+  return {
+    width: Math.max(
+      window.innerWidth || 1024,
+      document.documentElement?.scrollWidth ?? 0,
+    ),
+    height: Infinity,
+  };
+}
+
+/** The part of the page currently on screen, in page coordinates. */
+export function visibleViewport(): BubbleViewport {
   if (typeof window === "undefined") return { width: 1024, height: 768 };
   return {
+    left: window.scrollX,
+    top: window.scrollY,
     width: window.innerWidth || 1024,
     height: window.innerHeight || 768,
   };
 }
+
+const defaultViewport = pageViewport;
 
 /**
  * Place a bubble body above the anchor (the tail tip) and return the tail
@@ -228,6 +255,8 @@ export function placeTextBubble(
   viewport: BubbleViewport = defaultViewport(),
 ): BubblePlacement {
   const { margin, tailLength, tailHalf, radius } = TEXT_BUBBLE;
+  const vx = viewport.left ?? 0;
+  const vy = viewport.top ?? 0;
   const vw = Math.max(1, viewport.width);
   const vh = Math.max(1, viewport.height);
   const w = clampWidth(width);
@@ -236,15 +265,15 @@ export function placeTextBubble(
   // the anchor, so the tail base is centered on the click point.
   const nearInset = radius + tailHalf;
 
-  const aboveFits = anchor.y - tailLength - h >= margin;
-  const belowFits = anchor.y + tailLength + h <= vh - margin;
+  const aboveFits = anchor.y - tailLength - h >= vy + margin;
+  const belowFits = anchor.y + tailLength + h <= vy + vh - margin;
   let above = aboveFits;
-  if (!aboveFits && !belowFits) above = anchor.y >= vh / 2;
+  if (!aboveFits && !belowFits) above = anchor.y >= vy + vh / 2;
 
-  const rightFits = anchor.x - nearInset + w <= vw - margin;
-  const leftFits = anchor.x - w + nearInset >= margin;
+  const rightFits = anchor.x - nearInset + w <= vx + vw - margin;
+  const leftFits = anchor.x - w + nearInset >= vx + margin;
   let toRight = rightFits;
-  if (!rightFits && !leftFits) toRight = anchor.x <= vw / 2;
+  if (!rightFits && !leftFits) toRight = anchor.x <= vx + vw / 2;
 
   const desiredLeft = toRight
     ? anchor.x - nearInset
@@ -253,10 +282,10 @@ export function placeTextBubble(
     ? anchor.y - tailLength - h
     : anchor.y + tailLength;
 
-  const maxLeft = Math.max(margin, vw - margin - w);
-  const maxTop = Math.max(margin, vh - margin - h);
-  const left = Math.min(Math.max(desiredLeft, margin), maxLeft);
-  const top = Math.min(Math.max(desiredTop, margin), maxTop);
+  const maxLeft = Math.max(vx + margin, vx + vw - margin - w);
+  const maxTop = Math.max(vy + margin, vy + vh - margin - h);
+  const left = Math.min(Math.max(desiredLeft, vx + margin), maxLeft);
+  const top = Math.min(Math.max(desiredTop, vy + margin), maxTop);
   const body: BubbleBody = {
     left,
     top,

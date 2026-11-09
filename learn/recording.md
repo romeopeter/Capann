@@ -2,11 +2,9 @@
 
 Capann's recording UI is in the page overlay. The Chrome action opens the Record / Annotate chooser; choosing Record displays camera, microphone, and tab-audio options before capture. Those inputs are enabled by default when available.
 
-## Free vs Premium
+## Free in every edition
 
-In the free edition, annotations are free forever and recording is a Premium feature. The edition is a build setting: `capann.config.json` holds the branch default (`free` on the `free` branch, `premium` on `dev` and `premium`), and `npm run build:free` / `build:premium` override it, so `dev` can build either. The chooser marks Record with a mint `LockIcon` and a `Premium` badge; opening it shows the locked panel instead of device toggles or Start. The lock UI and copy come from `src/shared/features.ts`.
-
-The gate is enforced at every layer: `RECORDING_ENABLED` is `false`, the prewarm effect is skipped, the Record view never mounts the Start action, and the service worker rejects `record-prewarm`, `record-request-permission`, and `record-start` with `RECORDING_LOCKED_ERROR`. No offscreen recorder or permission prompt is created. The premium edition keeps recording enabled.
+Recording is free in both the free and premium editions; nothing in this flow checks the edition. Premium (`PREMIUM_ENABLED` in `src/shared/features.ts`) is reserved for the browser-AI layer and shareable links.
 
 Once recording starts, the annotation overlay and panel disappear, but a compact recording chip stays on the left edge. It shows elapsed time, pause/resume, stop & save, discard, and a circular camera preview at the bottom right. The chip is a **separate shadow host** (`#capann-recording-host`) and is intentionally part of the tab capture, so it appears in the saved video. The annotation host (`#capann-host`) remains hidden for the whole capture.
 
@@ -108,7 +106,6 @@ On any startup failure, the session is invalidated, acquired tracks are stopped,
 - `src/content/OverlayApp.tsx`: chooser, input options, annotation-overlay visibility, and the Record view's status.
 - `src/content/recording-chip.tsx`: floating recording controls and the circular bottom-right camera preview. Mounted in `#capann-recording-host` by `overlay.tsx`, independent of `captureHidden`.
 - `src/shared/types.ts`: `RecordOptions`, `RecordingStatus`, `RecordingStage`, `RecordingErrorCode`, `MediaPermissionState`, and message contracts (`record-prewarm`, `record-permission-state`, `record-request-permission`, `permission-granted`, `recording-permission`, `record-start`, `record-pause`, `record-resume`, `record-stop`, `record-discard`, `camera-preview-frame`, `recorder-camera-frame`, `offscreen-ping`, `offscreen-permission-state`, `offscreen-start`, `offscreen-progress`, `recorder-download-request`, `recorder-final-status`).
-- `src/shared/features.ts`: the edition-driven `RECORDING_ENABLED` gate and the Premium lock copy shared by the Record view and the service worker.
 - `src/background/service-worker.ts`: `tabCapture.getMediaStreamId`, offscreen lifecycle, typed `sendMessage` request/response, startup stage logging, failure mapping, action badge, shortcuts, chip commands, camera-frame relay, download handling, status relay.
 - `src/offscreen/recorder.ts`: message listener (no persistent port), media acquisition, camera preview frame streaming, audio mixing/playback, WebM chunks, progress reporting (`offscreen-progress`), download request, discard.
 - `src/offscreen/offscreen.html`: offscreen document entry point. It loads `offscreen/recorder.js` as a classic script (the bundle is an IIFE), so the message listener registers as soon as the document parses.

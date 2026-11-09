@@ -109,20 +109,24 @@ import {
   composerMaxHeight,
   bubbleOutlinePath,
   localTail,
+  pageViewport,
   placeComment,
+  textBubbleLayout,
   textFontSize,
   TEXT_BUBBLE,
+  visibleViewport,
 } from "./text-bubble";
+import type { BubbleViewport } from "./text-bubble";
+import {
+  clearCanvas,
+  pagePoint,
+  setPageTransform,
+  setScreenTransform,
+} from "./page-space";
 import { CapannShell, PANEL_FADE_MS, SHELL_BUTTON } from "./shell";
 import type { ShellPosition } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
 import { ShadowRootContext } from "./overlay";
-import {
-  RECORDING_ENABLED,
-  RECORDING_PREMIUM_BADGE,
-  RECORDING_PREMIUM_BODY,
-  RECORDING_PREMIUM_TITLE,
-} from "../shared/features";
 import { annotateBridge } from "./annotate-bridge";
 import {
   eraserCursor,
@@ -130,7 +134,7 @@ import {
   setCanvasCursor,
   toolCursor,
 } from "./cursors";
-import { LockIcon, PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
+import { PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "pencil",
@@ -339,6 +343,12 @@ interface TextEditor {
   anchor: Point;
   /** Pinned bubble position of the note being edited (see TextAnnotation). */
   bubble?: Point;
+  /**
+   * Placement area, frozen when the composer opens so scrolling moves the
+   * composer with the page instead of re-flipping it. New notes use the
+   * visible area; existing notes use the page, matching their committed layout.
+   */
+  viewport: BubbleViewport;
   existingId: string | null;
   color: string;
   width: number;
@@ -353,10 +363,6 @@ interface TextEditor {
  * grow out of the page rather than drifting away from the anchor.
  */
 function positionTextEditor(editor: TextEditor): void {
-  const viewport = {
-    width: window.innerWidth,
-    height: window.innerHeight,
-  };
   const lineHeight = Math.round(editor.fontSize * TEXT_BUBBLE.lineHeightRatio);
   const maxHeight = composerMaxHeight(editor.fontSize);
 
@@ -375,13 +381,15 @@ function positionTextEditor(editor: TextEditor): void {
     editor.width,
     bodyHeight,
     editor.bubble,
-    viewport,
+    editor.viewport,
   );
   const bubbleWidth = body.right - body.left;
   const bubbleHeight = body.bottom - body.top;
 
-  editor.container.style.left = `${body.left}px`;
-  editor.container.style.top = `${body.top}px`;
+  // The composer is position: fixed; layout is in page coordinates.
+  const screenLeft = body.left - window.scrollX;
+  editor.container.style.left = `${screenLeft}px`;
+  editor.container.style.top = `${body.top - window.scrollY}px`;
   editor.container.style.width = `${bubbleWidth}px`;
   editor.container.style.height = `${bubbleHeight}px`;
 
@@ -400,8 +408,9 @@ function positionTextEditor(editor: TextEditor): void {
   );
 
   const buttonGap = 38;
-  const canUseRight = body.right + buttonGap <= viewport.width - 8;
-  const canUseLeft = body.left - buttonGap >= 8;
+  const canUseRight =
+    screenLeft + bubbleWidth + buttonGap <= window.innerWidth - 8;
+  const canUseLeft = screenLeft - buttonGap >= 8;
   editor.send.style.left = "";
   editor.send.style.right = "";
   if (canUseRight) {
@@ -586,13 +595,13 @@ export function OverlayApp() {
 
     const objectsCtx = objectsCanvas.getContext("2d")!;
     const liveCtx = liveCanvas.getContext("2d")!;
-    objectsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    liveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Both layers draw in page coordinates; the scroll listener keeps this
+    // transform current.
+    setPageTransform(objectsCtx);
+    setPageTransform(liveCtx);
 
     redrawAll(
       objectsCtx,
-      width,
-      height,
       editingId ? objects.filter((object) => object.id !== editingId) : objects,
     );
   }, [editingId, objects]);
@@ -603,8 +612,6 @@ export function OverlayApp() {
     const ctx = objectsCanvas.getContext("2d")!;
     redrawAll(
       ctx,
-      window.innerWidth,
-      window.innerHeight,
       editingId ? objects.filter((object) => object.id !== editingId) : objects,
     );
   }, [editingId, objects]);
@@ -612,8 +619,7 @@ export function OverlayApp() {
   const clearLive = useCallback(() => {
     const liveCanvas = liveCanvasRef.current;
     if (!liveCanvas) return;
-    const ctx = liveCanvas.getContext("2d")!;
-    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    clearCanvas(liveCanvas.getContext("2d")!);
   }, []);
 
   const updatePointerMode = useCallback(() => {
@@ -653,6 +659,9 @@ export function OverlayApp() {
           (p) => now - p.time < LASER_TRAIL_MS,
         );
         clearLive();
+        // The cursor trail and spotlight follow the screen, not the page.
+        ctx.save();
+        setScreenTransform(ctx);
 
         if (toolRef.current === "laser") {
           for (const entry of laserTrailRef.current) {
@@ -699,6 +708,7 @@ export function OverlayApp() {
           ctx.fill();
           ctx.restore();
         }
+        ctx.restore();
       };
 
       const loop = () => {
@@ -819,7 +829,7 @@ export function OverlayApp() {
 
       if (!text) return;
 
-      const annotation: TextAnnotation = {
+      const draft: TextAnnotation = {
         id: makeId(),
         type: "text",
         color: editor.color,
@@ -830,6 +840,15 @@ export function OverlayApp() {
         fontSize: editor.fontSize,
         width: editor.width,
       };
+      // The composer was placed inside the visible area; committed notes are
+      // placed against the whole page. If those differ (the note was flipped or
+      // clamped at a screen edge), pin the bubble where the user saw it.
+      const shown = textBubbleLayout(draft, editor.viewport).body;
+      const page = textBubbleLayout(draft).body;
+      const annotation: TextAnnotation =
+        shown.left !== page.left || shown.top !== page.top
+          ? { ...draft, bubble: { x: shown.left, y: shown.top } }
+          : draft;
       objectsRef.current = [...current, annotation];
       setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
       setFuture([]);
@@ -915,6 +934,7 @@ export function OverlayApp() {
         send,
         anchor,
         bubble: current?.bubble,
+        viewport: current ? pageViewport() : visibleViewport(),
         existingId: current?.id ?? null,
         color: noteColor,
         width,
@@ -1112,7 +1132,7 @@ export function OverlayApp() {
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!drawModeEnabled) return;
-      const point = { x: e.clientX, y: e.clientY };
+      const point = pagePoint(e.clientX, e.clientY);
       e.currentTarget.setPointerCapture(e.pointerId);
 
       if (tool === "eraser") {
@@ -1223,7 +1243,7 @@ export function OverlayApp() {
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!drawModeEnabled) return;
-      const point = { x: e.clientX, y: e.clientY };
+      const point = pagePoint(e.clientX, e.clientY);
       // Eraser rubs out everything the cursor is dragged across, so it runs
       // before the stroke-preview branches and needs no drag state of its own.
       if (tool === "eraser") {
@@ -1413,7 +1433,7 @@ export function OverlayApp() {
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!drawModeEnabled) return;
-      const point = { x: e.clientX, y: e.clientY };
+      const point = pagePoint(e.clientX, e.clientY);
       e.currentTarget.releasePointerCapture(e.pointerId);
 
       // An erase drag already mutated `objects` directly; record the whole drag
@@ -1432,7 +1452,7 @@ export function OverlayApp() {
       const selectionDrag = selectionDragRef.current;
       selectionDragRef.current = null;
       if (tool === "select" && selectionDrag) {
-        const point = { x: e.clientX, y: e.clientY };
+        const point = pagePoint(e.clientX, e.clientY);
         const dx = point.x - selectionDrag.start.x;
         const dy = point.y - selectionDrag.start.y;
         let updated: AnnotationObject;
@@ -1812,7 +1832,9 @@ export function OverlayApp() {
       composite.height = Math.round(window.innerHeight * dpr);
       const ctx = composite.getContext("2d")!;
       ctx.drawImage(screenshot, 0, 0, composite.width, composite.height);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Annotations are in page coordinates; offset by the scroll so the
+      // export matches the screenshot.
+      setPageTransform(ctx);
       // Exactly once. The screenshot above is annotation-free by construction;
       // drawing here a second time would duplicate every object.
       for (const obj of objectsRef.current) drawAnnotation(ctx, obj);
@@ -1912,9 +1934,6 @@ export function OverlayApp() {
   }, []);
 
   const prepareRecorder = useCallback(async () => {
-    // Free build: recording is Premium. Do not create an offscreen recorder or
-    // ask for camera/microphone access for a surface that cannot start.
-    if (!RECORDING_ENABLED) return;
     setRecorderPreparation("preparing");
     setRecorderPreparationError("");
     try {
@@ -1941,7 +1960,7 @@ export function OverlayApp() {
   }, [refreshPermissions]);
 
   const requestPermissions = useCallback(async () => {
-    if (!RECORDING_ENABLED || permissionRequested) return;
+    if (permissionRequested) return;
     setPermissionRequested(true);
     try {
       await chrome.runtime.sendMessage({
@@ -1957,10 +1976,7 @@ export function OverlayApp() {
   }, [permissionRequested, recordOptions.camera, recordOptions.microphone]);
 
   const startRecording = useCallback(async () => {
-    // Free build guard. The Record view shows the Premium lock instead of the
-    // Start action, but keep the callback closed too so a stale event cannot
-    // reach the worker's record-start handler.
-    if (!RECORDING_ENABLED || startRequested) return;
+    if (startRequested) return;
     if (recorderPreparation !== "ready") {
       void prepareRecorder();
       return;
@@ -2028,12 +2044,7 @@ export function OverlayApp() {
   // Getting the recorder ready up front means the tab stream ID can be handed
   // over immediately, before Chrome's short-lived IDs expire.
   useEffect(() => {
-    if (
-      !RECORDING_ENABLED ||
-      uiView !== "record" ||
-      recorderPreparation !== "idle"
-    )
-      return;
+    if (uiView !== "record" || recorderPreparation !== "idle") return;
     void prepareRecorder();
   }, [uiView, recorderPreparation, prepareRecorder]);
 
@@ -2126,6 +2137,28 @@ export function OverlayApp() {
     window.addEventListener("resize", resizeCanvases);
     return () => window.removeEventListener("resize", resizeCanvases);
   }, [resizeCanvases]);
+
+  // Annotations are in page coordinates and the canvases are viewport-sized
+  // (learn/canvas.md), so scrolling shifts both layers' transforms and redraws
+  // from data. Chrome dispatches scroll at most once per frame, so this runs
+  // synchronously. An in-progress drag preview reappears on the next move.
+  const handleScrollRef = useRef<() => void>(() => undefined);
+  useLayoutEffect(() => {
+    handleScrollRef.current = () => {
+      const objectsCtx = objectsCanvasRef.current?.getContext("2d");
+      const liveCtx = liveCanvasRef.current?.getContext("2d");
+      if (objectsCtx) setPageTransform(objectsCtx);
+      if (liveCtx) setPageTransform(liveCtx);
+      redrawObjects();
+      redrawSelection();
+      if (editorRef.current) positionTextEditor(editorRef.current);
+    };
+  }, [redrawObjects, redrawSelection]);
+  useEffect(() => {
+    const onScroll = () => handleScrollRef.current();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // The laser is the pointer: hide the page's own cursor so only the red dot
   // shows. The canvas is click-through for this tool, so the cursor belongs to
@@ -2586,37 +2619,9 @@ export function OverlayApp() {
                 }}
                 style={{ ...SHELL_BUTTON, textAlign: "left" }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    width: "100%",
-                  }}
-                >
-                  {RECORDING_ENABLED ? (
-                    <RecordIcon size={20} weight="fill" />
-                  ) : (
-                    <LockIcon size={20} weight="fill" color="#86EFAC" />
-                  )}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <RecordIcon size={20} weight="fill" />
                   <span>Record</span>
-                  {!RECORDING_ENABLED && (
-                    <span
-                      style={{
-                        marginLeft: "auto",
-                        padding: "2px 7px",
-                        borderRadius: 999,
-                        background: "rgba(134,239,172,0.12)",
-                        color: "#86EFAC",
-                        fontSize: 9,
-                        fontWeight: 700,
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {RECORDING_PREMIUM_BADGE}
-                    </span>
-                  )}
                 </div>
                 <span
                   style={{
@@ -2683,82 +2688,6 @@ export function OverlayApp() {
             onPositionChange={setPanelPosition}
             closing={panelClosing}
           >
-            {!RECORDING_ENABLED && (
-              <div
-                style={{
-                  display: "grid",
-                  justifyItems: "center",
-                  gap: 10,
-                  padding: "6px 4px 2px",
-                  textAlign: "center",
-                }}
-              >
-                <span
-                  style={{
-                    display: "grid",
-                    placeItems: "center",
-                    width: 46,
-                    height: 46,
-                    borderRadius: "50%",
-                    background: "rgba(134,239,172,0.12)",
-                    border: "1px solid rgba(134,239,172,0.28)",
-                    color: "#86EFAC",
-                  }}
-                >
-                  <LockIcon size={22} weight="fill" />
-                </span>
-                <span
-                  style={{
-                    padding: "2px 8px",
-                    borderRadius: 999,
-                    background: "rgba(134,239,172,0.12)",
-                    color: "#86EFAC",
-                    fontSize: 9,
-                    fontWeight: 700,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {RECORDING_PREMIUM_BADGE}
-                </span>
-                <h3
-                  style={{
-                    margin: 0,
-                    color: "#F5F5F7",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    lineHeight: 1.3,
-                  }}
-                >
-                  {RECORDING_PREMIUM_TITLE}
-                </h3>
-                <p
-                  style={{
-                    margin: 0,
-                    color: "#8B8B93",
-                    fontSize: 11,
-                    lineHeight: 1.55,
-                  }}
-                >
-                  {RECORDING_PREMIUM_BODY}
-                </p>
-                <button
-                  onClick={() => {
-                    setUiView("annotate");
-                    handleDrawModeToggle(false);
-                  }}
-                  style={{
-                    ...SHELL_BUTTON,
-                    width: "100%",
-                    marginTop: 4,
-                  }}
-                >
-                  Mark screen instead
-                </button>
-              </div>
-            )}
-            {RECORDING_ENABLED && (
-              <>
             <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
               {annotateWhileRecording
                 ? "Annotations appear in the saved video. Capann's panel is hidden — use the pencil bubble to bring it back."
@@ -2920,8 +2849,6 @@ export function OverlayApp() {
               <p role="status" style={{ color: "#8B8B93", margin: "14px 0 0" }}>
                 Recording discarded.
               </p>
-            )}
-              </>
             )}
           </CapannShell>
         )}

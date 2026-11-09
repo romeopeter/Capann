@@ -16,7 +16,7 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 ## Main code areas
 
 - `src/shared/types.ts`: annotation data, tool ids, recording status/stages/error codes, and every message contract between the overlay, service worker, and offscreen recorder.
-- `src/shared/features.ts`: edition gate and Premium lock copy. The edition is injected at build time from `capann.config.json` (or `npm run build:free` / `build:premium`); in the free edition `RECORDING_ENABLED` is false, so recording is locked across the UI and worker.
+- `src/shared/features.ts`: edition gate. The edition is injected at build time from `capann.config.json` (or `npm run build:free` / `build:premium`) and exposed as `PREMIUM_ENABLED`, reserved for Premium features (browser AI, shareable links). Annotation and recording are free in both editions.
 - `src/content/overlay.tsx`: Shadow DOM host and React root bootstrap.
 - `src/content/geometry.ts`: bounds, hit tests, and spatial transformations.
 - `src/content/render.ts`: drawing annotation data to a canvas.
@@ -25,6 +25,7 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 - `src/content/shell.tsx`: shared draggable panel shell (header, Back/Close, position).
 - `src/content/annotate-controls.tsx`: annotation controls rendered inside the shell.
 - `src/content/text-bubble.ts`: text-bubble layout, wrapping, tails, and fonts.
+- `src/content/page-space.ts`: page-coordinate helpers and canvas transforms that make annotations scroll with the page (see [Canvas and memory](canvas.md)).
 - `src/background/service-worker.ts`: action handling, shortcuts, capture stream IDs, downloads, and status routing.
 - `src/offscreen/recorder.ts`: tab/camera/microphone capture, composition, audio routing, and WebM lifecycle.
 - `src/permissions/permissions.ts`: one-time camera/microphone grant page, because offscreen documents cannot prompt.

@@ -19,19 +19,21 @@ Everything runs locally. No network calls, no accounts, no uploads.
 gate**. The edition is a build-time setting, so all three branches share the same
 code and differ only in `capann.config.json`:
 
-| Branch | Purpose | `capann.config.json` edition | Recording |
+| Branch | Purpose | `capann.config.json` edition | Includes |
 |---|---|---|---|
-| `dev` | Integration branch; build either edition | `premium` (default) | Switchable |
-| `free` | Free edition | `free` | Locked behind Premium |
-| `premium` | Paid edition | `premium` | Enabled |
+| `dev` | Integration branch; build either edition | `premium` (default) | Premium features switchable |
+| `free` | Free edition | `free` | Annotation + recording |
+| `premium` | Paid edition | `premium` | Free features + Premium |
 
 - `scripts/build.mjs` reads `capann.config.json` and injects it as
   `__CAPANN_EDITION__` (esbuild `define`). `--edition=free|premium` overrides it,
   which is what `npm run build:free` / `build:premium` and
   `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
-- `src/shared/features.ts` derives `RECORDING_ENABLED` from the edition. When it is
-  false, the chooser and Record view show the mint Premium lock, and the service
-  worker rejects prewarm/permission/start. Annotations remain free forever.
+- Annotation and instant tab recording are free in every edition. Premium is
+  reserved for the browser-AI layer and shareable links (not built yet).
+  `src/shared/features.ts` derives `PREMIUM_ENABLED` from the edition; gate
+  Premium features on it in both the UI and the service worker. Nothing reads
+  it yet, so today both editions build the same extension.
 - Land shared behavior on `dev` first, then merge `dev` into both edition
   branches. The only edition-specific change is `capann.config.json`; never
   hardcode an edition in source.
@@ -70,7 +72,7 @@ code and differ only in `capann.config.json`:
 - **Status reporting**: The chip and the Chrome action badge/title show recording or paused state
 - **Non-blocking degradation**: Missing camera, microphone, or tab audio never blocks recording; unavailable inputs are reported in the Record view
 - **Explicit grant flow**: A visible extension page obtains camera/microphone permission, since offscreen documents cannot prompt
-- **Edition gate**: in the free edition `src/shared/features.ts` sets `RECORDING_ENABLED` to false; the chooser and Record view show a mint Premium lock, and the service worker rejects prewarm/permission/start. Annotations remain free forever. The edition comes from `capann.config.json` or `npm run build:free` / `build:premium`
+- **Free in every edition**: recording is not gated. `PREMIUM_ENABLED` in `src/shared/features.ts` is reserved for the Premium layer (browser AI, shareable links)
 
 ## Keyboard Shortcuts
 
@@ -185,6 +187,7 @@ src/content/               Content script injected into tabs (React, Shadow DOM)
   render.ts                Canvas rendering for all annotation types
   geometry.ts              Bounds, hit tests, and selection/eraser targeting
   text-bubble.ts           Shared text-bubble layout, wrapping, tails, fonts
+  page-space.ts            Page <-> viewport coordinates and canvas transforms for scrolling
   icons.ts                 SVG path definitions for tool icons
 src/offscreen/
   offscreen.html           Offscreen document entry (loads the IIFE recorder bundle)
@@ -221,7 +224,8 @@ learn/                     Accurate handbook: architecture, annotations, recordi
 **Manifest V3**: Service worker background (not persistent). Requires Chrome 116+ for the `tabCapture` route.
 
 **Canvas Architecture**:
-- Two overlapping HTML5 canvases injected into each tab, scaled by devicePixelRatio
+- Two overlapping HTML5 canvases injected into each tab, scaled by devicePixelRatio, **viewport-sized and fixed** (never page-sized — see `learn/canvas.md` for the memory cost)
+- Annotations are stored in **page coordinates** and scroll with the page: pointer input goes through `pagePoint`, drawing goes through `setPageTransform`, and a scroll listener redraws both layers (`src/content/page-space.ts`). Only window scroll is tracked. Laser and spotlight stay in screen space (`setScreenTransform`)
 - Bottom canvas: persisted annotations; top canvas: current stroke/shape and selection frames
 - Top canvas only receives pointer events (`pointer-events: auto`) while a capturing tool is active, so the page stays usable otherwise
 - Capturing tools: pencil, highlighter, arrow, rectangle, ellipse, text, eraser, select. Laser and spotlight are non-capturing and must never block clicks.
@@ -234,9 +238,9 @@ learn/                     Accurate handbook: architecture, annotations, recordi
 - The tail and the composer's send button use the panel surface, not the palette color; only the send arrow is violet. The tail flips sides near viewport edges; hovering with the text tool draws only a subtle outline, never a scale effect
 - Clicking a committed note with the text tool edits it in place; empty commits delete an existing note (undoable)
 - Body and tail are one outline (`bubbleOutlinePath`), filled and stroked once, so there is no seam at the tail base
-- With the Select tool, a selected comment shows a knob on its tail tip. Dragging it re-aims the pointer while the bubble stays put: the first drag pins the bubble (`TextAnnotation.bubble`), and the tail then leaves from whichever edge faces the tip. Comments without `bubble` keep automatic above/below placement
+- With the Select tool, a selected comment shows a knob on its tail tip. Dragging it re-aims the pointer while the bubble stays put: the first drag pins the bubble (`TextAnnotation.bubble`), and the tail then leaves from whichever edge faces the tip. Comments without `bubble` keep automatic above/below placement against the whole page (`pageViewport`), so they do not flip while scrolling. A new comment whose on-screen placement differed from that (near a screen edge) is pinned where it was shown
 
-**PNG Export**: `savePng` hides the shadow host synchronously, waits two animation frames, captures the tab, restores visibility from `captureHidden`, then draws annotations **exactly once** onto the screenshot. The screenshot is annotation-free by construction; if the hide step is ever missing, the capture already contains the annotations and they get drawn a second time.
+**PNG Export**: `savePng` hides the shadow host synchronously, waits two animation frames, captures the tab, restores visibility from `captureHidden`, then draws annotations **exactly once** onto the screenshot, offset by the scroll via `setPageTransform`. The screenshot is annotation-free by construction; if the hide step is ever missing, the capture already contains the annotations and they get drawn a second time.
 
 **Storage**: `chrome.storage.session`, keyed by tab ID (`capann_tab_<id>`). Cleared on browser close and immediately on Clear. Preserve the "survives reload, not restart" behavior unless explicitly asked otherwise.
 
@@ -378,7 +382,7 @@ Do not switch the offscreen or permission bundles to ESM: their HTML loads them 
 ```bash
 npm install          # Install dependencies
 npm run build        # Type check + bundle to dist/ (edition from capann.config.json)
-npm run build:free   # ...as the free edition (recording locked)
+npm run build:free   # ...as the free edition
 npm run build:premium # ...as the premium edition
 npm run watch        # Auto-rebuild on file changes (also watch:free / watch:premium)
 npm run typecheck    # Type check only

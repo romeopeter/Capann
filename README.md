@@ -6,7 +6,10 @@ accounts, no network calls, no uploads.
 
 ## Features
 
-### Mark screen (annotations — free forever)
+Annotation and instant tab recording are **free**. Premium (coming) adds a
+browser-AI layer and shareable links.
+
+### Mark screen
 
 - **Pencil** — freehand strokes, full color palette + custom color picker, adjustable size.
 - **Highlighter** — translucent broad strokes.
@@ -20,9 +23,10 @@ accounts, no network calls, no uploads.
 - Undo / redo, duplicate (`Ctrl/Cmd+D`), delete (`Delete` / `Backspace`).
 - Countdown timer (5 / 10 / 15 min) and Screen / Blackout / Whiteout mask.
 - **Save PNG** — captures the tab composited with your annotations.
+- Annotations scroll with the page (window scrolling; apps that scroll an inner panel keep them fixed).
 - Per-tab persistence: annotations survive tab switches and reloads until you hit Clear.
 
-### Record (Premium)
+### Record
 
 - Records **the current tab** to a local `.webm`, with optional camera bubble, microphone, and tab audio.
 - The Capann panel and annotations are hidden from the video. Turn on **Mark screen** in the Record view to draw during a recording instead — annotations then appear in the video, and the pencil bubble above the chip shows or hides the panel.
@@ -46,26 +50,27 @@ annotated or recorded.
 
 ## Editions and branches
 
-Recording is gated by a build-time **edition**. All branches share the same
+Premium features will be gated by a build-time **edition**. All branches share the same
 code; they differ only in `capann.config.json`.
 
-| Branch | Edition | Recording |
+| Branch | Edition | Includes |
 |---|---|---|
-| `dev` | `premium` by default, switchable | Switchable |
-| `free` | `free` | Locked behind Premium |
-| `premium` | `premium` | Enabled |
+| `dev` | `premium` by default, switchable | Everything; switch editions at build time |
+| `free` | `free` | Annotation + recording |
+| `premium` | `premium` | Free features + Premium (browser AI, shareable links) |
 
 Work and test on `dev`, then merge `dev` into `free` and `premium`. Never edit
 `capann.config.json` on `dev` and never hardcode an edition in source — use the
-edition build commands below. The gate and the Premium copy live in
-`src/shared/features.ts`.
+edition build commands below. The gate (`PREMIUM_ENABLED`) lives in
+`src/shared/features.ts`; nothing uses it yet, so both editions currently build
+the same extension.
 
 ## Build
 
 ```
 npm install
 npm run build           # typecheck + bundle into dist/ (edition from capann.config.json)
-npm run build:free      # free edition — recording locked
+npm run build:free      # free edition
 npm run build:premium   # premium edition
 npm run watch           # rebuild on change (also watch:free / watch:premium)
 npm run typecheck       # typecheck only
@@ -105,7 +110,7 @@ src/offscreen/           Offscreen recorder: composition, audio mixing, local We
 src/permissions/         One-time camera/microphone grant page
 src/shared/
   types.ts                 Annotation types and every message contract
-  features.ts              Edition gate and Premium copy
+  features.ts              Edition gate (PREMIUM_ENABLED)
 scripts/build.mjs        esbuild bundler -> dist/ (reads the edition)
 ```
 

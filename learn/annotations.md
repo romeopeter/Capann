@@ -1,10 +1,10 @@
 # Annotation data and rendering
 
-Annotations are plain objects described by the `AnnotationObject` union in `src/shared/types.ts`. Pencil and highlighter marks contain point arrays; arrows and shapes contain start/end points; text annotations contain a position and text. The same data is serialized to session storage and used for drawing, export, hit testing, and editing.
+Annotations are plain objects described by the `AnnotationObject` union in `src/shared/types.ts`. Pencil and highlighter marks contain point arrays; arrows and shapes contain start/end points; text annotations contain a position and text. The same data is serialized to session storage and used for drawing, export, hit testing, and editing. All positions are **page coordinates** (CSS pixels from the document's top-left), so annotations scroll with the page; see [Canvas and memory](canvas.md#how-scrolling-works).
 
 ## Drawing and editing flow
 
-The content canvas receives pointer events while a capturing tool is active. Pointer movement updates transient preview state on the top canvas. Pointer release creates a complete annotation and commits it to the object list. The bottom canvas is redrawn from that list.
+The content canvas receives pointer events while a capturing tool is active. Convert every pointer position with `pagePoint` before using it. Pointer movement updates transient preview state on the top canvas. Pointer release creates a complete annotation and commits it to the object list. The bottom canvas is redrawn from that list.
 
 The Select tool hit-tests from the topmost annotation down. Selection itself is temporary UI state. Moving an annotation translates its stored points or coordinates; resizing a rectangle or ellipse updates its bounds. The resulting object list is committed once per completed drag so one undo restores the state before the drag. Selection frames and handles are drawn on the top canvas and are excluded from PNG export.
 

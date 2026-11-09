@@ -27,6 +27,7 @@ import {
   localTail,
   textBubbleLayout,
 } from "./text-bubble";
+import { clearCanvas } from "./page-space";
 
 function drawStroke(
   ctx: CanvasRenderingContext2D,
@@ -298,10 +299,10 @@ export function drawAnnotation(
 
 export function redrawAll(
   ctx: CanvasRenderingContext2D,
-  cssWidth: number,
-  cssHeight: number,
   objects: AnnotationObject[],
 ): void {
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  // The context carries a scroll offset (page-space.ts), so clear the whole
+  // bitmap rather than a rectangle in the current transform.
+  clearCanvas(ctx);
   for (const obj of objects) drawAnnotation(ctx, obj);
 }

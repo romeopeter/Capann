@@ -6,18 +6,11 @@
  * override it (see `scripts/build.mjs`). On `dev` this lets one codebase build
  * either edition; `free` and `premium` differ only in that config value.
  *
- * Annotations are free forever; recording is Premium. Keep the gate in one
- * place so the Record view, the prewarm effect, and the worker's message
- * guards cannot drift apart.
+ * Annotations and instant tab recording are free in every edition. Premium is
+ * reserved for the browser-AI layer and shareable links; gate those features on
+ * `PREMIUM_ENABLED` here so the UI and the service worker cannot drift apart.
  */
 export type Edition = "free" | "premium";
 
 export const EDITION: Edition = __CAPANN_EDITION__;
-export const RECORDING_ENABLED = EDITION === "premium";
-
-export const RECORDING_PREMIUM_TITLE = "Recording is a Premium feature";
-export const RECORDING_PREMIUM_BODY =
-  "Annotations are free forever. Premium adds annotations + instant screen recording + shareable links and a 7-day history. All for $6.99/month or $69.99/year.";
-export const RECORDING_PREMIUM_BADGE = "Premium";
-export const RECORDING_LOCKED_ERROR =
-  "Recording is a Premium feature. Annotations are free forever.";
+export const PREMIUM_ENABLED = EDITION === "premium";
