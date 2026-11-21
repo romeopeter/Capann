@@ -2,7 +2,7 @@
 
 ## What this is
 Marketing landing page for **Capann**, a browser extension (draw, point, screenshot, screen-record on any page; one-time purchase, no subscription). Built by Duowork.
-React site with two routes: the landing page (`/`) and an interactive `/playground` that renders three realistic sample pages so visitors can annotate them with the installed extension. Content and visual design are ports of the static design export — do not invent copy or styling.
+React site with the landing page (`/`), an interactive `/playground` that renders three realistic sample pages so visitors can annotate them with the installed extension, `/privacy`, and three Capann Premium utility pages (`/verify`, `/view-my-links`, `/upgraded`; see below). Content and visual design are ports of the static design export — do not invent copy or styling.
 
 ## Source of truth (design export, outside this repo)
 `/Users/romeo/Desktop/Capann website/`
@@ -40,7 +40,7 @@ Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-w
 - Tailwind v4 tree-shakes unused non-color theme vars from output; utilities still generate on demand. Verified pattern: use the class, `npm run build`, grep `dist/assets/*.css`.
 
 ## App structure
-- `src/App.jsx` — router shell (`BrowserRouter` with the Vite base as `basename`, `/` landing, `/playground`, `/privacy`, catch-all landing) + scroll-to-top on route change.
+- `src/App.jsx` — router shell (`BrowserRouter` with the Vite base as `basename`, `/` landing, `/playground`, `/privacy`, `/verify`, `/view-my-links`, `/upgraded`, catch-all landing) + scroll-to-top on route change.
 - `src/pages/LandingPage.jsx` — entire landing page (data arrays `USES`/`FEATURE_GROUPS`/`SHORTCUTS`/`FAQS` + `ToolbarDemo` interactive toolbar mock with `useState` for tool/color/size). `ToolbarDemo` is a demo, not the real extension.
 - `src/pages/PrivacyPage.jsx` — `/privacy` policy page on the dark landing palette: hero + date meta, sticky on-page contents (desktop only), ten policy sections rendered with small local `Paragraph`/`SubHeading`/`Bullets`/`Section` helpers. Policy copy is owner-supplied — don't rewrite it, only re-port it.
 - `src/components/SiteFooter.jsx` — shared footer (Duowork line, Home / Playground / Privacy links, copyright) used by the landing and privacy pages.
@@ -50,6 +50,16 @@ Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-w
 - `src/playground/playground.css` — scoped sample styles and palettes.
 - `src/main.jsx` — entry; `src/index.css` — theme + base styles; `index.html` — fonts (Big Shoulders Display + Sora via Google Fonts), favicons, meta.
 - Brand icon in use: `svg/capann-icon-light.svg` ("light" = for dark backgrounds, per assets README).
+
+## Capann Premium pages
+Sign-in and link recovery for the Premium extension. The extension (Capann repo, `src/background/premium.ts`) and the Cloudflare Worker (`backend/`) own the contracts — don't change them from here. No accounts or passwords: a user is an email proven by magic links.
+- `src/pages/VerifyPage.jsx` — `/verify?token=…` (single-use, 15-min login token). Pings each extension ID (`capann-ping`) on load; exchanges the token (`POST /api/auth/verify`) **only on click**, because email scanners open links. Hands the 30-day session token to the extension (`capann-session`), and keeps it in memory so a failed hand-off can be retried without spending the link again. Never stores tokens.
+- `src/pages/ViewMyLinksPage.jsx` — `/view-my-links?token=…` (reusable 15-min links token). `GET /api/links/list` with `Authorization: Bearer`; countdowns run on server time (skew from the response's `now`), re-rendered every 30s and on tab focus; under 24h is highlighted in cream.
+- `src/pages/UpgradedPage.jsx` — `/upgraded`, the Bachs post-checkout redirect. Sends `capann-refresh`, retrying briefly because the webhook can lag.
+- `src/premium/` — `config.js` (env), `api.js` (`callApi` + `ApiError`; the server's `error.message` is user-safe), `extension.js` (`sendToExtension`, `findExtension`), `usePrivatePage.js` (`noindex` + `referrer: no-referrer` while mounted, restored on leave), `PremiumLayout.jsx` (glass header, card, `Notice`, live `StatusLine`, button classes). Errors use `role="alert"`, progress `role="status"`; `--color-error` (#FCA5A5) is the flagged addition in `index.css`.
+- Origin is strict: the extension accepts messages only from its exact site origin (`https://capann.duowork.tech`, or `http://localhost:5173` in a local build). Never serve these pages from `www` or another host. `vite.config.js` pins the dev server to port 5173 (`strictPort`) for the same reason.
+- Env (Vite, all public): `VITE_CAPANN_API_URL`, `VITE_CAPANN_EXTENSION_IDS` (comma-separated; Web Store ID first, then any unpacked IDs), `VITE_CAPANN_INSTALL_URL` (falls back to `/#pricing`). They live in local, gitignored `.env.development` / `.env.production` (dev: `VITE_CAPANN_API_URL=http://127.0.0.1:8799` plus your unpacked ID; prod: the production API, the Web Store ID and listing URL). Without them the API defaults to production and no extension is found, so `/verify` always asks the visitor to install Capann.
+- Local end-to-end: in the Capann repo, `cd backend && npx wrangler dev --port 8799` (magic links print to its output with `EMAIL_TRANSPORT=console`), build the extension with `node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173`, load `dist/` unpacked, put its ID in `.env.development`, then `npm run dev` here.
 
 ## Git
 `main` branch. Keep commits scoped (landing build / theme / deploy were separate commits). `node_modules/` and `dist/` are gitignored — never commit them.
