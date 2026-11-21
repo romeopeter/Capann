@@ -3,7 +3,9 @@ import type {
   RecordingStage,
   RecordingStatus,
   BackgroundToRecorderMessage,
+  ShareRequest,
 } from "../shared/types";
+import { chooseCopy, shareBusy, startShareJob } from "./share";
 
 const OFFSCREEN_TARGET = "offscreen" as const;
 
@@ -32,6 +34,12 @@ let activeStart = 0;
 let discardRequested = false;
 let missingInputs: string[] = [];
 let currentSessionId: string | null = null;
+let currentTabId = -1;
+// Set by a Premium stop: the finished file becomes a share job instead of a
+// download. Cleared on every start, so it never leaks into the next recording.
+// A recording that ends on its own (the tab closed) has no stop command, so it
+// is always saved locally.
+let shareRequest: ShareRequest | null = null;
 
 // Signal readiness immediately when the offscreen document loads.
 void chrome.runtime
@@ -220,6 +228,8 @@ function waitForVideoMetadata(video: HTMLVideoElement): Promise<void> {
 
 async function start(message: StartMessage): Promise<void> {
   currentSessionId = message.sessionId;
+  currentTabId = message.tabId;
+  shareRequest = null;
   if (recorder && recorder.state !== "inactive")
     throw new Error("A recording is already active.");
   chunks = [];
@@ -541,6 +551,19 @@ async function finalize(discard: boolean): Promise<void> {
       status,
       target: OFFSCREEN_TARGET,
     });
+  } else if (shareRequest) {
+    const request = shareRequest;
+    shareRequest = null;
+    const filename = `capann-recording-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+    // Final status first, then the job: both happen in this task, so the
+    // worker's busy check (triggered by the final status) already sees the job.
+    const status: RecordingStatus = { state: "sharing", filename, sessionId };
+    void chrome.runtime.sendMessage({
+      kind: "recorder-final-status",
+      status,
+      target: OFFSCREEN_TARGET,
+    });
+    startShareJob({ sessionId, tabId: currentTabId, blob, filename, request });
   } else {
     const filename = `capann-recording-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
     const blobUrl = URL.createObjectURL(blob);
@@ -560,6 +583,8 @@ type RecorderResponse = {
   errorCode?: RecordingErrorCode;
   camera?: PermissionState;
   microphone?: PermissionState;
+  /** A share job still needs this document (see share.ts). */
+  busy?: boolean;
 };
 
 function respond(
@@ -577,6 +602,12 @@ function handleRecorderCommand(
   if (message.target !== OFFSCREEN_TARGET) return;
 
   if (message.kind === "offscreen-ping") {
+    sendResponse({ ok: true, busy: shareBusy() });
+    return;
+  }
+
+  if (message.kind === "offscreen-share-copy") {
+    chooseCopy(message.sessionId, message.save);
     respond(sendResponse, true);
     return;
   }
@@ -632,6 +663,8 @@ function handleRecorderCommand(
     return;
   }
   if (message.kind === "offscreen-stop") {
+    if (message.sessionId === currentSessionId)
+      shareRequest = message.share ?? null;
     if (recorder && recorder.state !== "inactive") {
       if (recorder.state === "recording")
         accumulatedMs += performance.now() - activeStart;

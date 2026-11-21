@@ -8,6 +8,7 @@ This handbook explains how Capann is put together and how to make changes that f
 - [Annotations](annotations.md) — annotation types, drawing, hit testing, selection, and history.
 - [Canvas and memory](canvas.md) — why the overlay canvases are viewport-sized, what a canvas costs, the hard limits, and how annotations scroll with the page.
 - [Recording](recording.md) — in-page record setup, capture pipeline, visibility, and lifecycle.
+- [Premium share links](premium.md) — the extension side of Premium: which context does what, sign-in hand-off, how a stop becomes a link, and the "never lose a recording" invariant.
 - [Premium backend](backend.md) — the Cloudflare Worker behind shareable links: passwordless tokens, where state lives and why, uploads, retention, and abuse controls. Setup and the route table are in [`backend/README.md`](../backend/README.md).
 - [Making changes](making-changes.md) — a practical workflow for extending the project and keeping these notes current.
 

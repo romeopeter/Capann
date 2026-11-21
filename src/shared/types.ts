@@ -136,7 +136,84 @@ export type RecordingStatus =
   | { state: "paused"; elapsedMs: number; camera: boolean; microphone: boolean; tabAudio: boolean; unavailable: string[]; sessionId: string }
   | { state: "error"; error: string; code: RecordingErrorCode; sessionId?: string }
   | { state: "saved"; filename: string; sessionId: string }
+  /**
+   * Terminal like "saved": capture is over and every stream is released, but
+   * the file went to the Premium share flow instead of straight to Downloads.
+   * Its progress is reported separately as `ShareJobStatus`.
+   */
+  | { state: "sharing"; filename: string; sessionId: string }
   | { state: "discarded"; sessionId: string };
+
+// ── Premium: shareable links ─────────────────────────────────────────────────
+
+/** A recording uploaded to the Premium backend (`POST /api/upload`). */
+export interface ShareLink {
+  id: string;
+  url: string;
+  size: number;
+  uploadedAt: string;
+  expiresAt: string;
+}
+
+/** Whether to also keep the .webm on this computer when a link is made. */
+export type CopyPreference = "ask" | "always" | "never";
+
+/** Upload failure classes; each maps to one friendly message and recovery. */
+export type ShareErrorCode =
+  | "PAYMENT_REQUIRED"
+  | "SIGNED_OUT"
+  | "TOO_LARGE"
+  | "NETWORK"
+  | "SERVER";
+
+export type ShareUpload =
+  | { state: "uploading"; loaded: number; total: number }
+  | { state: "uploaded"; link: ShareLink }
+  | { state: "failed"; code: ShareErrorCode; error: string };
+
+/**
+ * The local-copy half of a share job. "ask" waits for the presenter; a failed
+ * upload always saves a copy, whatever was chosen, so a video is never lost.
+ */
+export type ShareCopy = "ask" | "saving" | "saved" | "skipped" | "failed";
+
+/** One recording's trip to the backend, owned by the offscreen document. */
+export interface ShareJobStatus {
+  sessionId: string;
+  filename: string;
+  upload: ShareUpload;
+  copy: ShareCopy;
+  /** The blob is released; nothing more will change. */
+  done: boolean;
+}
+
+/** Sent with `offscreen-stop` when the stop should produce a link. */
+export interface ShareRequest {
+  token: string;
+  copyPreference: CopyPreference;
+}
+
+/** What the page may know about the account. Never includes the token. */
+export interface AccountSummary {
+  signedIn: boolean;
+  email: string | null;
+  paid: boolean;
+  expiresAt: string | null;
+  copyPreference: CopyPreference;
+}
+
+export type PremiumActionResult =
+  | { ok: true }
+  | { ok: false; error: string; retryAfter?: number };
+
+/**
+ * Website → extension (`chrome.runtime.sendMessage(extensionId, …)` from a page
+ * listed in `externally_connectable`). The site origin is checked by the worker.
+ */
+export type WebsiteToExtensionMessage =
+  | { kind: "capann-ping" }
+  | { kind: "capann-session"; token: string }
+  | { kind: "capann-refresh" };
 
 export type BackgroundToContentMessage =
   | { kind: "toggle-capann-ui" }
@@ -146,7 +223,8 @@ export type BackgroundToContentMessage =
   | { kind: "recording-prepare-hide" }
   | { kind: "recording-prepare-show" }
   | { kind: "camera-preview-frame"; sessionId: string; dataUrl: string }
-  | ({ kind: "recording-permission" } & MediaPermissionState);
+  | ({ kind: "recording-permission" } & MediaPermissionState)
+  | { kind: "share-status"; status: ShareJobStatus };
 
 export type CaptureVisibleTabResponse =
   | { kind: "capture-visible-tab-result"; dataUrl: string }
@@ -168,7 +246,16 @@ export type ContentToBackgroundMessage =
   | { kind: "record-resume" }
   | { kind: "record-stop" }
   | { kind: "record-discard" }
-  | ({ kind: "record-start" } & RecordOptions);
+  | ({ kind: "record-start" } & RecordOptions)
+  // Premium only; the free build never sends these.
+  /** `refresh` re-checks `paid` with the server (throttled unless `force`). */
+  | { kind: "premium-account"; refresh: boolean; force?: boolean }
+  | { kind: "premium-sign-in"; email: string }
+  | { kind: "premium-sign-out" }
+  | { kind: "premium-upgrade" }
+  | { kind: "premium-open-links" }
+  | { kind: "premium-copy-preference"; preference: CopyPreference }
+  | { kind: "share-copy-choice"; sessionId: string; save: boolean; remember: boolean };
 
 /** Worker-to-offscreen commands (typed request/response via sendMessage). */
 export type BackgroundToRecorderMessage =
@@ -183,8 +270,15 @@ export type BackgroundToRecorderMessage =
     } & RecordOptions)
   | { kind: "offscreen-pause"; sessionId: string; target: "offscreen" }
   | { kind: "offscreen-resume"; sessionId: string; target: "offscreen" }
-  | { kind: "offscreen-stop"; sessionId: string; target: "offscreen" }
-  | { kind: "offscreen-discard"; sessionId: string; target: "offscreen" };
+  | {
+      kind: "offscreen-stop";
+      sessionId: string;
+      target: "offscreen";
+      /** Present only for a paid Premium session: upload instead of download. */
+      share?: ShareRequest;
+    }
+  | { kind: "offscreen-discard"; sessionId: string; target: "offscreen" }
+  | { kind: "offscreen-share-copy"; sessionId: string; save: boolean; target: "offscreen" };
 
 /** Offscreen-to-worker messages (typed responses + progress). */
 export type RecorderToBackgroundMessage =
@@ -200,6 +294,11 @@ export type RecorderToBackgroundMessage =
   | { kind: "recorder-download-request"; blobUrl: string; filename: string; mimeType: string; sessionId: string }
   | { kind: "recorder-final-status"; status: RecordingStatus }
   | { kind: "offscreen-close"; target: "offscreen" }
+  // Share jobs outlive the recording session, so they carry their own tab id
+  // instead of relying on the worker's (in-memory, per-session) state.
+  | { kind: "recorder-share-status"; tabId: number; status: ShareJobStatus; target: "offscreen" }
+  | { kind: "recorder-copy-download"; blobUrl: string; filename: string; target: "offscreen" }
+  | { kind: "recorder-share-finished"; sessionId: string; target: "offscreen" }
   | ({
       kind: "permission-granted";
       tabId: number;

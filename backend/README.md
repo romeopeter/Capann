@@ -16,7 +16,7 @@ Free features (annotation, local recording) never touch this service.
 ```
 Extension ── POST /api/auth/magic-link ──► Worker ──► Resend ──► inbox
 inbox link ─► website /verify ── POST /api/auth/verify ──► 30-day session token
-website ── chrome.runtime.sendMessage(extensionId, token) ──► extension storage
+website ── chrome.runtime.sendMessage(extensionId, { kind: "capann-session", token }) ──► extension
 
 Extension ── POST /api/checkout (session) ──► { url } ──► Bachs checkout tab
 Bachs ── POST /api/webhooks/bachs (signed) ──► KV sub:<email> = active
@@ -176,10 +176,17 @@ providers only touches `sendMagicLink` in `src/email.ts`.
 - **`/verify`**: email security scanners can open links before the user does.
   Have the page exchange the token on a button click ("Continue to Capann")
   rather than on load, or a scanner can spend the single-use token.
-- **Token hand-off**: the website can only message the extension if
-  `manifest.json` lists the site under `externally_connectable.matches`.
+- **Token hand-off** (implemented in the extension, `src/background/premium.ts`):
+  send `{ kind: "capann-session", token }` with
+  `chrome.runtime.sendMessage(extensionId, …)`. The premium build lists
+  `siteUrl` under `externally_connectable`, and only that origin is accepted.
+  The reply is `{ ok: true, email, paid }` or `{ ok: false, error }`.
+  `{ kind: "capann-ping" }` → `{ ok, edition, version }` detects the extension;
+  `{ kind: "capann-refresh" }` re-checks `paid` after checkout.
 - **The extension needs the Worker's origin** in `host_permissions`. Capann
-  already has `<all_urls>`.
+  already has `<all_urls>`. Its client is `src/shared/premium/api.ts` and
+  `src/offscreen/uploader.ts`; `node scripts/premium-e2e.mjs` (repo root) runs
+  it against `wrangler dev`.
 
 ## Files
 

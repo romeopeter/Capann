@@ -25,6 +25,11 @@ try {
   console.error("Build output missing. Run `npm run build` first.");
   process.exit(1);
 }
+// The premium manifest declares the side panel; the free one is manifest.json.
+const edition = JSON.parse(readFileSync(path.join(root, "dist/manifest.json"), "utf8")).side_panel
+  ? "premium"
+  : "free";
+console.log(`Testing the ${edition} build`);
 
 function assert(cond, message) {
   if (!cond) throw new Error(`FAIL: ${message}`);
@@ -37,6 +42,10 @@ async function testWorker() {
   let onMessage = null;
   let contextsOpen = false;
   let offscreenCommand = null;
+  // What the offscreen document answers to offscreen-ping (a Premium share
+  // job keeps it busy after the recording ended).
+  let offscreenBusy = false;
+  const localStore = {};
   const tabMessages = [];
   const started = Date.now();
 
@@ -44,10 +53,17 @@ async function testWorker() {
     runtime: {
       onInstalled: { addListener() {} },
       onMessage: { addListener(fn) { onMessage = fn; } },
+      onMessageExternal: { addListener() {} },
       getURL: (p) => `chrome-extension://test/${p}`,
+      getManifest: () => ({ version: "test" }),
       lastError: undefined,
       getContexts: async () => (contextsOpen ? [{ contextType: "OFFSCREEN_DOCUMENT" }] : []),
       sendMessage(message, callback) {
+        // Pings are lifecycle checks, not commands; keep the last command.
+        if (message.kind === "offscreen-ping") {
+          if (callback) setTimeout(() => callback({ ok: true, busy: offscreenBusy }), 0);
+          return Promise.resolve();
+        }
         offscreenCommand = message;
         // Every command in this harness answers ok so the worker's bounded
         // send helpers resolve immediately.
@@ -57,7 +73,14 @@ async function testWorker() {
         return Promise.resolve();
       },
     },
-    storage: { session: { setAccessLevel: async () => {} } },
+    storage: {
+      session: { setAccessLevel: async () => {} },
+      local: {
+        get: async (key) => (key in localStore ? { [key]: localStore[key] } : {}),
+        set: async (items) => Object.assign(localStore, items),
+        remove: async (key) => { delete localStore[key]; },
+      },
+    },
     action: {
       onClicked: { addListener() {} },
       setBadgeText: async () => {},
@@ -278,6 +301,10 @@ async function testWorker() {
     offscreenCommand.kind === "offscreen-stop",
     "held startup stop is delivered on the first live status",
   );
+  assert(
+    offscreenCommand.share === undefined,
+    "stop without a paid session carries no share request (local download)",
+  );
 
   onMessage(
     {
@@ -287,6 +314,79 @@ async function testWorker() {
     {},
     () => {},
   );
+  await new Promise((r) => setTimeout(r, 60));
+
+  // Premium: a paid session turns the stop into a share, and the recorder
+  // document must outlive the recording while its share job is busy.
+  localStore.capann_session = {
+    token: "session-token",
+    email: "a@example.com",
+    paid: true,
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    checkedAt: Date.now(),
+  };
+  const third = await new Promise((resolve) => {
+    onMessage(
+      { kind: "record-start", camera: false, microphone: false, tabAudio: false },
+      { tab: { id: 7 } },
+      resolve,
+    );
+    setTimeout(() => resolve({ ok: false, error: "timeout" }), 4000);
+  });
+  assert(third.ok === true, "third recording starts");
+  const thirdSession = offscreenCommand.sessionId;
+  onMessage(
+    {
+      kind: "record-status",
+      status: {
+        state: "recording",
+        startedAt: Date.now(),
+        camera: false,
+        microphone: false,
+        tabAudio: false,
+        unavailable: [],
+        sessionId: thirdSession,
+      },
+    },
+    {},
+    () => {},
+  );
+  sendContent({ kind: "record-stop" });
+  await new Promise((r) => setTimeout(r, 40));
+  assert(offscreenCommand.kind === "offscreen-stop", "paid stop is sent");
+  if (edition === "premium") {
+    assert(
+      offscreenCommand.share?.token === "session-token" &&
+        offscreenCommand.share.copyPreference === "ask",
+      "premium: paid stop carries the share request (token + copy choice)",
+    );
+  } else {
+    assert(
+      offscreenCommand.share === undefined,
+      "free: even a stored paid session never shares",
+    );
+  }
+
+  offscreenBusy = edition === "premium";
+  onMessage(
+    {
+      kind: "recorder-final-status",
+      status:
+        edition === "premium"
+          ? { state: "sharing", filename: "test.webm", sessionId: thirdSession }
+          : { state: "saved", filename: "test.webm", sessionId: thirdSession },
+    },
+    {},
+    () => {},
+  );
+  await new Promise((r) => setTimeout(r, 60));
+  if (edition === "premium") {
+    assert(contextsOpen, "premium: busy recorder document stays open after 'sharing'");
+    offscreenBusy = false;
+    onMessage({ kind: "recorder-share-finished", sessionId: thirdSession, target: "offscreen" }, {}, () => {});
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  assert(!contextsOpen, "recorder document closes once idle");
 }
 
 // Recorder: an unrecognized command must be answered, not left hanging.
@@ -341,6 +441,7 @@ async function testRecorder() {
     setTimeout(() => resolve({ __timeout: true }), 1000);
   });
   assert(!ping.__timeout && ping.ok === true, "offscreen-ping still answers ok:true");
+  assert(ping.busy === false, "offscreen-ping reports no share job (busy:false)");
 
   let responded = false;
   const foreign = onMessage({ kind: "record-start", target: "content" }, {}, () => { responded = true; });

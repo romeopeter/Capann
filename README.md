@@ -2,13 +2,14 @@
 
 Chrome extension (Manifest V3) for presenting over a screen share: annotate any
 web page, and record the tab to a local WebM. The free features run entirely
-locally — no accounts, no network calls, no uploads. Premium cloud links are
-backed by a separate Cloudflare Worker in [`backend/`](backend/README.md).
+locally — no accounts, no network calls, no uploads. Premium turns a recording
+into a 7-day share link, backed by a separate Cloudflare Worker in
+[`backend/`](backend/README.md).
 
 ## Features
 
-Annotation and instant tab recording are **free**. Premium (coming) adds a
-browser-AI layer and shareable links.
+Annotation and instant tab recording are **free**. Premium adds shareable links;
+a browser-AI layer is planned.
 
 ### Mark screen
 
@@ -33,6 +34,15 @@ browser-AI layer and shareable links.
 - The Capann panel and annotations are hidden from the video. Turn on **Mark screen** in the Record view to draw during a recording instead — annotations then appear in the video, and the pencil bubble above the chip shows or hides the panel.
 - A recording chip on the left edge (stop & save, timer, pause / resume, discard) and the camera bubble at the bottom right stay visible and are part of the recording.
 - Missing camera, microphone, or tab audio never blocks a recording; a one-time grant page handles device permissions.
+
+### Share (Premium)
+
+- **Sign in with email** from the Record view — no password. The emailed link opens the website, which hands the session to the extension.
+- **Upgrade** opens Bachs checkout for the signed-in email; the panel picks up the new plan when you return.
+- When a paid user stops a recording, it **uploads and the link is copied** to the clipboard. A dialog asks whether to also keep the `.webm` (with "Don't ask again"; change it later under **Keep a copy**).
+- A failed upload always saves the file locally, so a recording is never lost.
+- **My links** opens Chrome's side panel: every live link with Copy, Open, and a countdown to its 7-day expiry, plus "Lost a link?" email recovery.
+- The free build shows one link to the pricing page instead, and makes no network calls.
 
 ## Activation and shortcuts
 
@@ -61,10 +71,12 @@ code; they differ only in `capann.config.json`.
 | `premium` | `premium` | Free features + Premium (browser AI, shareable links) |
 
 Work and test on `dev`, then merge `dev` into `free` and `premium`. Never edit
-`capann.config.json` on `dev` and never hardcode an edition in source — use the
-edition build commands below. The gate (`PREMIUM_ENABLED`) lives in
-`src/shared/features.ts`; nothing uses it yet, so both editions currently build
-the same extension.
+the edition in `capann.config.json` on `dev` and never hardcode an edition in
+source — use the edition build commands below. The gate (`PREMIUM_ENABLED`)
+lives in `src/shared/features.ts`. The premium build adds the account row, share
+flow, and links side panel, and its manifest adds `sidePanel` and
+`externally_connectable` for the website; the free manifest is `manifest.json`
+unchanged.
 
 ## Build
 
@@ -79,6 +91,14 @@ npm run typecheck       # typecheck only
 
 The build prints `Built <edition> edition` — check it before loading `dist/`.
 
+`capann.config.json` also sets the Premium backend (`apiUrl`) and website
+(`siteUrl`). To try Premium against a local backend and website without
+editing it:
+
+```
+node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173
+```
+
 Load `dist/` as an unpacked extension: `chrome://extensions` → enable Developer
 Mode → **Load unpacked** → select the `dist` folder. After each rebuild, reload
 the extension there and then reload the page you're testing, since content
@@ -89,6 +109,7 @@ scripts don't re-inject into open tabs.
 ```
 node scripts/record-wiring-test.mjs   # recorder/worker wiring against dist/ (either edition)
 node scripts/smoke-test.mjs           # Playwright: loads the built extension in Chromium
+node scripts/premium-e2e.mjs          # Premium client (API + uploader) against `wrangler dev`
 ```
 
 ## Project layout
@@ -98,8 +119,10 @@ manifest.json            Extension manifest (copied into dist/)
 capann.config.json       Build edition for this branch (free | premium)
 icons/                   Toolbar icons (scripts/gen-icons.js regenerates them)
 src/background/          Service worker: action/shortcuts, tab capture, offscreen lifecycle, downloads
+  premium.ts               Premium: account, website hand-off, share-status relay, link history
 src/content/             Content script (React, Shadow DOM)
   OverlayApp.tsx           Chooser, Mark screen / Record views, canvases, history, persistence
+  premium-panel.tsx        Premium account row, share card, "Save a copy?" dialog, free teaser
   annotate-controls.tsx    Tool, color, size, and option controls
   shell.tsx                Shared draggable panel
   recording-chip.tsx       Recording chip, camera bubble, Mark screen bubble
@@ -108,11 +131,14 @@ src/content/             Content script (React, Shadow DOM)
   render.ts, geometry.ts   Canvas drawing, hit tests, resize/rotate math
   text-bubble.ts           Comment bubble layout and outline
 src/offscreen/           Offscreen recorder: composition, audio mixing, local WebM
+  share.ts, uploader.ts    Premium share jobs and the single/multipart uploader
 src/permissions/         One-time camera/microphone grant page
+src/sidepanel/           Premium "Your links" side panel
 src/shared/
   types.ts                 Annotation types and every message contract
-  features.ts              Edition gate (PREMIUM_ENABLED)
-scripts/build.mjs        esbuild bundler -> dist/ (reads the edition)
+  features.ts              Edition gate (PREMIUM_ENABLED), API and site URLs
+  premium/                 Backend API client and chrome.storage.local state
+scripts/build.mjs        esbuild bundler -> dist/ (reads the edition, writes the manifest)
 ```
 
 ## Notes
@@ -122,6 +148,8 @@ scripts/build.mjs        esbuild bundler -> dist/ (reads the edition)
 - Annotations are stored in `chrome.storage.session`, keyed per tab: they clear
   when the browser session ends, and immediately on Clear.
 - Requires Chrome 116+ for tab recording.
+- Premium keeps its session, the "Keep a copy" choice, and link history in
+  `chrome.storage.local`, so they survive a browser restart.
 
 ## Learning the codebase
 

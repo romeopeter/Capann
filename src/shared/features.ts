@@ -14,3 +14,12 @@ export type Edition = "free" | "premium";
 
 export const EDITION: Edition = __CAPANN_EDITION__;
 export const PREMIUM_ENABLED = EDITION === "premium";
+
+/** Premium backend origin (no trailing slash). Set in capann.config.json. */
+export const API_URL: string = __CAPANN_API_URL__;
+/** Website origin: sign-in landing pages, link recovery, and pricing. */
+export const SITE_URL: string = __CAPANN_SITE_URL__;
+/** Where the free build's one Premium teaser points. Opening it is a plain link. */
+export const PRICING_URL = `${SITE_URL}/#pricing`;
+/** Shown on the Upgrade button. Keep in step with the Bachs product price. */
+export const PREMIUM_PRICE_LABEL = "$7/month";

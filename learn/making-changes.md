@@ -9,7 +9,9 @@
 5. Update this handbook when a change alters architecture, annotation behavior, storage, or the contributor workflow.
 6. Run `npm run typecheck` and `npm run build` before handing off the change.
 
-For backend changes (`backend/`), follow the rules in [Premium backend](backend.md#rules-when-changing-the-backend), run `npm run typecheck` and the end-to-end suite inside `backend/`, and treat any change to a request or response shape as a contract change: update the extension and website clients and `backend/README.md` together.
+For backend changes (`backend/`), follow the rules in [Premium backend](backend.md#rules-when-changing-the-backend), run `npm run typecheck` and the end-to-end suite inside `backend/`, and treat any change to a request or response shape as a contract change: update the extension and website clients and `backend/README.md` together. The extension's client is `src/shared/premium/api.ts` and `src/offscreen/uploader.ts`; `node scripts/premium-e2e.mjs` runs them against `wrangler dev`.
+
+For Premium extension changes, read [Premium share links](premium.md) first. Gate on `PREMIUM_ENABLED`, keep API calls out of the content script, keep the token out of the page, and preserve "never lose a recording": the offscreen document closes only when no share job needs it, and a failed upload always saves the file. Build both editions and confirm the free build's manifest is unchanged.
 
 For recording changes, also update [Recording](recording.md). Check all three typed message boundaries (content script, service worker, and offscreen document), preserve tab-specific capture invocation, and ensure capture errors do not result in a download.
 

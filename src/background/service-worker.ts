@@ -9,6 +9,16 @@ import type {
   RecordingStatus,
   RecordingStage,
 } from "../shared/types";
+import { PREMIUM_ENABLED } from "../shared/features";
+import {
+  downloadCopy,
+  handlePremiumMessage,
+  handleShareStatus,
+  registerWebsiteMessaging,
+  shareRequestForStop,
+} from "./premium";
+
+if (PREMIUM_ENABLED) registerWebsiteMessaging();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.session.setAccessLevel({
@@ -105,6 +115,8 @@ function updateActionBadge(status: RecordingStatus): void {
       title = `Capann — ${status.error}`;
     } else if (status.state === "saved") {
       title = `Capann — Saved ${status.filename}`;
+    } else if (status.state === "sharing") {
+      title = "Capann is uploading your recording";
     }
     void chrome.action.setTitle({ title });
   }
@@ -191,23 +203,33 @@ function isSingleOffscreenError(error: unknown): boolean {
 
 // Verify a pre-existing offscreen document actually has its listener
 // registered. A document whose script failed to load still exists in
-// getContexts() but never answers.
-function pingOffscreen(): Promise<boolean> {
+// getContexts() but never answers. `busy` means a Premium share job (upload or
+// local-copy choice) still needs the document after its recording ended.
+function queryOffscreen(): Promise<{ alive: boolean; busy: boolean }> {
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(false), 1_500);
+    const timeout = setTimeout(() => resolve({ alive: false, busy: false }), 1_500);
     try {
       chrome.runtime.sendMessage(
         { kind: "offscreen-ping", target: "offscreen" },
         (response) => {
           clearTimeout(timeout);
-          resolve(Boolean(response?.ok));
+          void chrome.runtime.lastError;
+          resolve({ alive: Boolean(response?.ok), busy: Boolean(response?.busy) });
         },
       );
     } catch {
       clearTimeout(timeout);
-      resolve(false);
+      resolve({ alive: false, busy: false });
     }
   });
+}
+
+async function pingOffscreen(): Promise<boolean> {
+  return (await queryOffscreen()).alive;
+}
+
+async function offscreenBusy(): Promise<boolean> {
+  return (await offscreenDocumentExists()) && (await queryOffscreen()).busy;
 }
 
 // Set while the recorder is being replaced (after a permission grant). Other
@@ -367,9 +389,24 @@ async function sendRecorderCommand(
 ): Promise<void> {
   if (!(await offscreenDocumentExists())) return;
   if (!currentSessionId) return;
+  const sessionId = currentSessionId;
+  if (command === "stop") {
+    // Every user stop (chip, action click, shortcut) passes through here, so
+    // this is the one place a paid Premium session turns "save" into "share".
+    // Without a share request the recorder downloads the file exactly as before.
+    const share = PREMIUM_ENABLED ? await shareRequestForStop() : undefined;
+    if (sessionId !== currentSessionId) return;
+    await sendOffscreenCommand({
+      kind: "offscreen-stop",
+      sessionId,
+      target: "offscreen",
+      ...(share ? { share } : {}),
+    });
+    return;
+  }
   await sendOffscreenCommand({
     kind: `offscreen-${command}`,
-    sessionId: currentSessionId,
+    sessionId,
     target: "offscreen",
   } as BackgroundToRecorderMessage);
 }
@@ -399,6 +436,7 @@ function notifyRecordingTab(status: RecordingStatus): void {
   );
   if (
     status.state === "saved" ||
+    status.state === "sharing" ||
     status.state === "discarded" ||
     status.state === "error"
   ) {
@@ -413,9 +451,13 @@ function notifyRecordingTab(status: RecordingStatus): void {
   }
 }
 
+// "Idle" means no recording AND no share job: after a Premium stop the
+// recording is over but the document still holds the file it is uploading.
+// The share job reports `recorder-share-finished`, which calls this again.
 async function closeOffscreenIfIdle(): Promise<void> {
   if (recordingActive) return;
   if (await offscreenDocumentExists()) {
+    if (await offscreenBusy()) return;
     await closeOffscreen();
     offscreenCreatePromise = null;
     offscreenReady = false;
@@ -687,6 +729,10 @@ chrome.runtime.onMessage.addListener(
     sender,
     sendResponse,
   ) => {
+    if (PREMIUM_ENABLED) {
+      const handled = handlePremiumMessage(message, sender, sendResponse);
+      if (handled !== undefined) return handled;
+    }
     if (message.kind === "get-tab-id") {
       const tabId = sender.tab?.id ?? -1;
       sendResponse({
@@ -734,6 +780,17 @@ chrome.runtime.onMessage.addListener(
       // replace the recorder before the page prepares it again. Close first so
       // a prewarm started right after this message creates a fresh document.
       void (async () => {
+        // A share job still holds its file in this document. Leave it; the
+        // job closes the document when it finishes, and the next recording
+        // then starts in a fresh one that has the new grant.
+        if (await offscreenBusy()) {
+          await sendToTab(message.tabId, {
+            kind: "recording-permission",
+            camera: message.camera,
+            microphone: message.microphone,
+          }).catch(() => undefined);
+          return;
+        }
         offscreenCreatePromise = null;
         offscreenReady = false;
         const reset = closeOffscreen();
@@ -891,12 +948,24 @@ chrome.runtime.onMessage.addListener(
             sessionId,
           });
         } else {
+          // "saved" is terminal: notifyRecordingTab closes the offscreen
+          // document, which releases the Blob behind blobUrl.
           notifyRecordingTab({ state: "saved", filename, sessionId });
         }
-        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
-        // Instruct the recorder to release resources and close.
-        void chrome.runtime.sendMessage({ kind: "offscreen-close", target: "offscreen" });
       });
+      return false;
+    }
+    if (message.kind === "recorder-share-status") {
+      if (PREMIUM_ENABLED) handleShareStatus(message.tabId, message.status);
+      return false;
+    }
+    if (message.kind === "recorder-copy-download") {
+      if (!PREMIUM_ENABLED) return false;
+      downloadCopy(message.blobUrl, message.filename, sendResponse);
+      return true;
+    }
+    if (message.kind === "recorder-share-finished") {
+      void closeOffscreenIfIdle();
       return false;
     }
     if (message.kind === "recorder-final-status") {

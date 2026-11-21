@@ -55,6 +55,9 @@
  * - Chrome storage integration for per-tab persistence
  * - Screenshot capture and PNG export
  * - Record view, recorder pre-warm, and recording status handling
+ * - Premium share UI in the Record view (`premium-panel.tsx`). Recording-only:
+ *   a share job starts after the capture has ended and the overlay is visible
+ *   again, so it never interacts with `captureHidden` or PNG export.
  */
 
 import {
@@ -135,6 +138,16 @@ import {
   toolCursor,
 } from "./cursors";
 import { PencilSimpleIcon, RecordIcon } from "@phosphor-icons/react";
+import { PREMIUM_ENABLED } from "../shared/features";
+import {
+  AccountSection,
+  CopyDialog,
+  FreeTeaser,
+  PremiumStyles,
+  ShareCard,
+  usePremiumAccount,
+  useShareJob,
+} from "./premium-panel";
 
 const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "pencil",
@@ -504,6 +517,18 @@ export function OverlayApp() {
   const [maskOn, setMaskOn] = useState(false);
   const [maskMode, setMaskMode] = useState(0); // 0 = screen, 1 = blackout, 2 = whiteout
   const [seconds, setSeconds] = useState(754);
+  // Premium: the account (no token) and the latest share job for this tab.
+  // Both are inert in the free build.
+  const premium = usePremiumAccount(uiView === "record");
+  const share = useShareJob();
+  // A share job holds the finished file until the upload and the local-copy
+  // choice are both settled; a new recording waits for it (see share.ts).
+  const shareBusy = share.status !== null && !share.status.done;
+  // The previous link stays on the Record view until the next capture starts.
+  const clearShare = share.clear;
+  useEffect(() => {
+    if (recordingStatus.state === "starting") clearShare();
+  }, [recordingStatus.state, clearShare]);
 
   const currentPointsRef = useRef<Point[] | null>(null);
   const dragStartRef = useRef<Point | null>(null);
@@ -2328,11 +2353,13 @@ export function OverlayApp() {
             setStatusText(
               message.status.state === "saved"
                 ? "Recording saved"
-                : message.status.state === "discarded"
-                  ? "Recording discarded"
-                  : message.status.state === "error"
-                    ? message.status.error
-                    : "",
+                : message.status.state === "sharing"
+                  ? "Creating your link"
+                  : message.status.state === "discarded"
+                    ? "Recording discarded"
+                    : message.status.state === "error"
+                      ? message.status.error
+                      : "",
             );
           }
           break;
@@ -2688,6 +2715,9 @@ export function OverlayApp() {
             onPositionChange={setPanelPosition}
             closing={panelClosing}
           >
+            <PremiumStyles />
+            {/* Positioning context for the "Save a copy?" dialog. */}
+            <div style={{ position: "relative" }}>
             <p style={{ margin: "0 0 12px", color: "#8B8B93", fontSize: 11 }}>
               {annotateWhileRecording
                 ? "Annotations appear in the saved video. Capann's panel is hidden — use the pencil bubble to bring it back."
@@ -2756,7 +2786,11 @@ export function OverlayApp() {
             {!recordingIsActive && (
               <button
                 onClick={() => void startRecording()}
-                disabled={recorderPreparation === "preparing" || startRequested}
+                disabled={
+                  recorderPreparation === "preparing" ||
+                  startRequested ||
+                  shareBusy
+                }
                 style={{
                   ...SHELL_BUTTON,
                   width: "100%",
@@ -2766,22 +2800,28 @@ export function OverlayApp() {
                   color: "#17131F",
                   fontWeight: 700,
                   cursor:
-                    recorderPreparation === "preparing" || startRequested
+                    recorderPreparation === "preparing" ||
+                    startRequested ||
+                    shareBusy
                       ? "wait"
                       : "pointer",
                   opacity:
-                    recorderPreparation === "preparing" || startRequested
+                    recorderPreparation === "preparing" ||
+                    startRequested ||
+                    shareBusy
                       ? 0.65
                       : 1,
                 }}
               >
-                {recorderPreparation === "preparing"
-                  ? "Preparing recorder…"
-                  : startRequested
-                    ? "Starting recording…"
-                    : recorderPreparation === "failed"
-                      ? "Try preparing recorder again"
-                      : "Start recording"}
+                {shareBusy
+                  ? "Finishing your link…"
+                  : recorderPreparation === "preparing"
+                    ? "Preparing recorder…"
+                    : startRequested
+                      ? "Starting recording…"
+                      : recorderPreparation === "failed"
+                        ? "Try preparing recorder again"
+                        : "Start recording"}
               </button>
             )}
             {recorderPreparation === "failed" && !recordingIsActive && (
@@ -2850,6 +2890,40 @@ export function OverlayApp() {
                 Recording discarded.
               </p>
             )}
+            {PREMIUM_ENABLED &&
+              recordingStatus.state === "sharing" &&
+              !share.status && (
+                <p role="status" style={{ color: "#F5E8A6", margin: "14px 0 0" }}>
+                  Preparing your link…
+                </p>
+              )}
+            {PREMIUM_ENABLED && share.status && !recordingIsActive && (
+              <ShareCard
+                status={share.status}
+                clipboard={share.clipboard}
+                onCopy={share.copyLink}
+              />
+            )}
+            {PREMIUM_ENABLED && !recordingIsActive && (
+              <AccountSection
+                account={premium.account}
+                onAccount={premium.setAccount}
+                onRefresh={() => premium.reload(true, true)}
+                nudge={recordingStatus.state === "saved"}
+              />
+            )}
+            {!PREMIUM_ENABLED && !recordingIsActive && (
+              <FreeTeaser saved={recordingStatus.state === "saved"} />
+            )}
+            {PREMIUM_ENABLED &&
+              share.status?.copy === "ask" &&
+              !recordingIsActive && (
+                <CopyDialog
+                  uploaded={share.status.upload.state === "uploaded"}
+                  onAnswer={share.answerCopy}
+                />
+              )}
+            </div>
           </CapannShell>
         )}
 

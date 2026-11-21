@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capann links</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --surface-base: #1c1c20;
+        --surface-elevated: #26262b;
+        --border-hairline: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.15);
+        --accent-violet: #a78bfa;
+        --accent-mint: #86efac;
+        --text-primary: #f5f5f7;
+        --text-muted: #8b8b93;
+        --danger: #fca5a5;
+        --ease-morph: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        background: #141417;
+        color: var(--text-primary);
+        font: 400 13px/1.45 Manrope, Inter, system-ui, -apple-system, sans-serif;
+      }
+      button, input { font: inherit; color: inherit; }
+      button { cursor: pointer; }
+      button:focus-visible, a:focus-visible, input:focus-visible {
+        outline: 2px solid var(--accent-violet);
+        outline-offset: 2px;
+      }
+      @keyframes pop {
+        0% { transform: scale(0.6); opacity: 0; }
+        60% { transform: scale(1.12); opacity: 1; }
+        100% { transform: scale(1); }
+      }
+      @keyframes fade-in {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: none; }
+      }
+      .pop { animation: pop 320ms var(--ease-morph) both; }
+      .row { animation: fade-in 180ms var(--ease-morph) both; }
+      @media (prefers-reduced-motion: reduce) {
+        .pop, .row { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Classic IIFE bundle, like the offscreen and permission pages. -->
+    <script src="sidepanel/sidepanel.js"></script>
+  </body>
+</html>

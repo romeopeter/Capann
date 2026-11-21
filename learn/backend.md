@@ -9,9 +9,10 @@ the two never compile together.
 This note explains how the backend is designed and why. For setup, deploy
 commands, and the full route table, see [`backend/README.md`](../backend/README.md).
 
-> **Status:** the Worker is built and passes an end-to-end suite locally. The
-> extension and website clients are not built yet, and the Bachs webhook format
-> is unverified (see [Open items](#open-items)).
+> **Status:** the Worker and the extension client are built and pass end-to-end
+> suites locally ([Premium share links](premium.md) covers the extension). The
+> website pages are not built yet, and the Bachs webhook format is unverified
+> (see [Open items](#open-items)).
 
 ## No accounts, by design
 
@@ -212,11 +213,14 @@ recovery, the rate limit, cancellation, and CORS. It does **not** cover the
   event names in `backend/src/bachs.ts` are assumptions listed at the top of the
   file. Confirm them against Bachs' documentation before launch, along with the
   `{email}` placeholder in `BACHS_CHECKOUT_URL`.
-- **Clients aren't built.** The extension needs the sign-in and upload flows and
-  the website needs `/verify` and `/view-my-links`. Two requirements already
-  known:
+- **The website isn't built.** It needs `/verify` and `/view-my-links`. The
+  extension side is done, including its half of the hand-off:
   - `/verify` should exchange the token on a button click, not on page load —
     email security scanners open links, and could spend the single-use token.
-  - The website can only pass the session token to the extension if
-    `manifest.json` lists the site under `externally_connectable.matches`.
+  - It then sends `{ kind: "capann-session", token }` with
+    `chrome.runtime.sendMessage(extensionId, …)`. The premium build's manifest
+    lists `siteUrl` under `externally_connectable`, and the worker accepts the
+    message only from that origin. `{ kind: "capann-ping" }` detects whether the
+    extension is installed; `{ kind: "capann-refresh" }` re-checks `paid`
+    (useful on a post-checkout page).
 - **Not deployed.** Nothing has run against real Cloudflare, Resend, or Bachs.

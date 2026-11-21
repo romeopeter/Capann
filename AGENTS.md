@@ -13,7 +13,7 @@ does two jobs from one in-page overlay:
 
 The free features run entirely locally: no network calls, no accounts, no uploads. Premium
 (cloud links for recordings) is backed by a separate Cloudflare Worker in `backend/`; see
-[Premium Backend](#premium-backend). The extension does not call it yet.
+[Premium Backend](#premium-backend) and [Premium Share Links](#premium-share-links).
 
 ## Branch Strategy
 
@@ -32,11 +32,17 @@ code and differ only in `capann.config.json`:
   which is what `npm run build:free` / `build:premium` and
   `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
 - Annotation and instant tab recording are free in every edition. Premium is
-  reserved for the browser-AI layer and shareable cloud links. The backend for
-  links exists in `backend/`; the extension and website sides are not built yet.
-  `src/shared/features.ts` derives `PREMIUM_ENABLED` from the edition; gate
-  Premium features on it in both the UI and the service worker. Nothing reads
-  it yet, so today both editions build the same extension.
+  reserved for the browser-AI layer and shareable cloud links. Links are built
+  in the extension and `backend/`; the website's `/verify` and `/view-my-links`
+  pages are not built yet. `src/shared/features.ts` derives `PREMIUM_ENABLED`
+  from the edition; gate Premium features on it in both the UI and the service
+  worker. The free build shows one teaser link to the pricing page and nothing
+  else.
+- `build.mjs` writes `dist/manifest.json` per edition: free is `manifest.json`
+  unchanged; premium adds the `sidePanel` permission, `side_panel`, and
+  `externally_connectable` for `siteUrl`. `capann.config.json` also holds
+  `apiUrl` and `siteUrl` (`--api-url=` / `--site-url=` override them), and only
+  the edition differs between branches.
 - Land shared behavior on `dev` first, then merge `dev` into both edition
   branches. The only edition-specific change is `capann.config.json`; never
   hardcode an edition in source.
@@ -76,6 +82,7 @@ code and differ only in `capann.config.json`:
 - **Non-blocking degradation**: Missing camera, microphone, or tab audio never blocks recording; unavailable inputs are reported in the Record view
 - **Explicit grant flow**: A visible extension page obtains camera/microphone permission, since offscreen documents cannot prompt
 - **Free in every edition**: recording is not gated. `PREMIUM_ENABLED` in `src/shared/features.ts` is reserved for the Premium layer (browser AI, shareable links)
+- **Premium links**: a paid user's stop uploads the recording and copies its link instead of downloading; see [Premium Share Links](#premium-share-links)
 
 ## Keyboard Shortcuts
 
@@ -155,6 +162,9 @@ The panel must still never be on screen at the moment the stream ID is minted.
 
 Recording and export deliberately use separate mechanisms: export is a one-shot
 hide, recording is a lifecycle state. Merging them reintroduces the bug above.
+
+A Premium share job (upload + "Save a copy?") starts only after the capture has
+ended and the overlay is visible again, so it never touches `captureHidden`.
 The chip is also separate: it must never reuse `captureHidden`, or the timer,
 controls, and camera preview would disappear from the video.
 
@@ -176,6 +186,8 @@ manifest.json              Chrome extension manifest (Manifest V3)
 src/background/
   service-worker.ts        Action/shortcut handling, tabCapture stream IDs, offscreen
                            lifecycle, downloads, badge, permission routing, stage logging
+  premium.ts               Premium account (sign-in, upgrade, refresh), website hand-off
+                           (onMessageExternal), share-status relay, link history
 src/content/               Content script injected into tabs (React, Shadow DOM)
   overlay.tsx              Shadow DOM setup and React root bootstrap; mounts OverlayApp
                            hidden until recording state is checked, plus the separate
@@ -184,6 +196,8 @@ src/content/               Content script injected into tabs (React, Shadow DOM)
                            history, persistence, timer, mask (the largest file)
   recording-chip.tsx       Floating recording controls (timer, pause/resume, stop,
                            discard) and bottom-right camera preview in their own host
+  premium-panel.tsx        Record view's Premium pieces: account row, share card,
+                           "Save a copy?" dialog, free-build teaser
   shell.tsx                Shared draggable panel shell: header, Back/Close, positioning
   annotate-controls.tsx    Annotation controls rendered inside the shell (former Toolbar
                            body: tools, colors, size, head/fill options, timer, mask)
@@ -196,18 +210,25 @@ src/offscreen/
   offscreen.html           Offscreen document entry (loads the IIFE recorder bundle)
   index.html               Unused near-duplicate of offscreen.html; not copied by the build
   recorder.ts              Tab composition, camera preview frame streaming, audio mixing,
-                           WebM chunks, download request
+                           WebM chunks, download request or share hand-off
+  share.ts                 Premium share jobs: upload + local-copy choice, never lose a file
+  uploader.ts              Single or multipart upload with progress (XHR), retries
 src/permissions/
   permissions.html         Visible one-time camera/microphone grant page (offscreen
                            documents cannot show permission prompts)
   permissions.ts           Requests each enabled device, then reports back
+src/sidepanel/             Premium "Your links" side panel (premium build only)
 src/shared/
   types.ts                 Annotation types, tool ids, recording status/stages/error
                            codes, and all message contracts
+  features.ts              Edition gate, API_URL / SITE_URL / PRICING_URL
+  premium/api.ts           Backend JSON client (worker + side panel only)
+  premium/store.ts         chrome.storage.local: session, copy preference, link history
 scripts/
   build.mjs                esbuild bundler (TypeScript + React -> JavaScript), 4 entry points
   gen-icons.js             Icon generator script (no external deps)
   smoke-test.mjs           Playwright automated testing
+  premium-e2e.mjs          Premium client (api.ts + uploader.ts) against wrangler dev
 learn/                     Accurate handbook: architecture, annotations, recording,
                            making-changes. Read this before large changes.
 backend/                   Separate Cloudflare Worker project (own package.json) for
@@ -222,7 +243,7 @@ backend/                   Separate Cloudflare Worker project (own package.json)
 4. `OverlayApp` owns two sibling views inside `CapannShell`: **Annotate** and **Record**.
 5. Annotate uses two stacked canvases — bottom for committed objects, top for pointer input, previews, and selection handles.
 6. Record pre-warms the offscreen recorder, then mints a `tabCapture` stream ID, hands it to the offscreen document, and that document composes/encodes. The recorder streams camera preview frames to the chip, which draws the bottom-right circular bubble as part of the captured tab.
-7. On save, the recorder creates a Blob URL and asks the service worker to `chrome.downloads.download` it.
+7. On save, the recorder creates a Blob URL and asks the service worker to `chrome.downloads.download` it. For a paid Premium session the stop command carries a share request instead, and the recorder hands the Blob to a share job (see [Premium Share Links](#premium-share-links)).
 
 ### Key Technical Details
 
@@ -249,13 +270,15 @@ backend/                   Separate Cloudflare Worker project (own package.json)
 
 **Storage**: `chrome.storage.session`, keyed by tab ID (`capann_tab_<id>`). Cleared on browser close and immediately on Clear. Preserve the "survives reload, not restart" behavior unless explicitly asked otherwise.
 
-**Message Passing**: Three typed boundaries, all discriminated unions in `src/shared/types.ts`:
+**Message Passing**: typed boundaries, all discriminated unions in `src/shared/types.ts`:
 - `BackgroundToContentMessage` / `ContentToBackgroundMessage`
 - `BackgroundToRecorderMessage` / `RecorderToBackgroundMessage`
+- `WebsiteToExtensionMessage` (premium only): the website → service worker, checked against `siteUrl`
 
-Any change to a message shape must update all three participants.
+Any change to a message shape must update every participant. The website
+messages are a contract with the separate website codebase.
 
-**Permissions**: `<all_urls>`, `storage`, `activeTab`, `downloads`, `tabCapture`, `tabs`, `offscreen`. No `<all_urls>` alternative works — annotations and PNG capture must function on whatever the presenter is sharing.
+**Permissions**: `<all_urls>`, `storage`, `activeTab`, `downloads`, `tabCapture`, `tabs`, `offscreen`; the premium build adds `sidePanel`. No `<all_urls>` alternative works — annotations and PNG capture must function on whatever the presenter is sharing. It also covers the API origin, which is what exempts the worker, offscreen document, and side panel from CORS.
 
 ### Recording Internals
 
@@ -275,11 +298,16 @@ Minting before the recorder is ready is the main source of intermittent failures
 - Chrome allows one offscreen document per extension; the worker pings any existing one, closes it if stale, and retries once on "Only a single offscreen document may be created".
 - Tab audio is muted by Chrome during capture, so the recorder pipes it back to local playback.
 - Chunks stay in memory in the offscreen document; discard drops them without downloading.
+- **The offscreen document closes only when idle**: no recording *and* no share
+  job. `closeOffscreenIfIdle` and the permission-grant reset ask the document
+  (`offscreen-ping` → `busy`) first; closing it mid-upload would lose the file.
 
 **Session logging**: each session gets an id and every stage transition logs
 `[Capann] session=<id> stage=<stage> {...}`. Failures log the stage, browser error name, and message. The UI only ever shows friendly mapped messages — see the failure table in `learn/recording.md`.
 
 **Recording stages**: `preparing-recorder`, `acquiring-tab-stream`, `preparing-video`, `starting-recorder`, `recording`, `paused`, `stopping`, `finalizing`, `idle`.
+
+**Terminal statuses**: `saved`, `sharing` (Premium: the file went to a share job), `discarded`, `error`.
 
 **Recording error codes**: `TAB_CAPTURE_UNAVAILABLE`, `TAB_STREAM_ACQUISITION_FAILED`, `NO_VIDEO_TRACK`, `RECORDER_STARTUP_FAILED`, `OFFSCREEN_SETUP_FAILED`, `PERMISSION_DENIED_CAMERA`, `PERMISSION_DENIED_MICROPHONE`, `PERMISSION_DENIED_TAB_AUDIO`, `PROTECTED_PAGE`, `RECORDING_STOPPED_UNEXPECTEDLY`, `FILE_SAVE_FAILED`.
 
@@ -369,7 +397,7 @@ The drag position is owned by `OverlayApp`, not the shell. Each view mounts a di
 - Outputs to `dist/` directory
 - Type checking via `tsc --noEmit` before bundling
 
-Four entry points, all bundled as IIFE targeting `chrome116`:
+Four entry points (five in the premium build), all bundled as IIFE targeting `chrome116`:
 
 | Entry | Output |
 |---|---|
@@ -377,10 +405,11 @@ Four entry points, all bundled as IIFE targeting `chrome116`:
 | `src/content/overlay.tsx` | `dist/content/overlay.js` |
 | `src/offscreen/recorder.ts` | `dist/offscreen/recorder.js` |
 | `src/permissions/permissions.ts` | `dist/permissions/permissions.js` |
+| `src/sidepanel/sidepanel.tsx` (premium) | `dist/sidepanel/sidepanel.js` |
 
-`build.mjs` also copies `manifest.json`, `icons/`, `src/offscreen/offscreen.html` → `dist/offscreen.html`, and `src/permissions/permissions.html` → `dist/permissions.html`.
+`build.mjs` also writes the edition's manifest (see [Branch Strategy](#branch-strategy)) and copies `icons/`, `src/offscreen/offscreen.html` → `dist/offscreen.html`, `src/permissions/permissions.html` → `dist/permissions.html`, and in the premium build `src/sidepanel/sidepanel.html` → `dist/sidepanel.html`.
 
-Do not switch the offscreen or permission bundles to ESM: their HTML loads them as classic scripts so listeners register as soon as the document parses.
+Do not switch the offscreen, permission, or side panel bundles to ESM: their HTML loads them as classic scripts so listeners register as soon as the document parses.
 
 ## Development Workflow
 
@@ -394,6 +423,8 @@ npm run typecheck    # Type check only
 ```
 
 Load unpacked extension from `dist/` in Chrome (`chrome://extensions` → Developer Mode → Load unpacked). Reload the extension in `chrome://extensions` after each rebuild; then reload the target tab, since content scripts do not re-inject into open pages.
+
+To exercise Premium locally, run the backend (`cd backend && npx wrangler dev --port 8799`) and build with `node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173`.
 
 ## Code Patterns & Conventions
 
@@ -435,6 +466,7 @@ Manual checks worth running for any non-trivial change:
 - Countdown timer (5/10/15) and Screen/Blackout/Whiteout mask
 - In-page Record / Annotate chooser in a shared draggable shell
 - Tab recording to local WebM with a bottom-right camera bubble, mic, tab audio, and an in-page recording chip
+- Premium: email sign-in, upgrade, upload-to-link with auto-copy, "Save a copy?" choice, and a links side panel
 - One-time camera/microphone grant page
 - PNG export composited with annotations
 
@@ -452,16 +484,55 @@ Manual checks worth running for any non-trivial change:
 - **Retention**: R2 lifecycle deletes both prefixes after 7 days (`backend/r2-lifecycle.json`);
   the Worker also refuses anything older than 7 days, because lifecycle deletion lags.
 - **Uploads re-check KV**, not the session's `paid` claim, which can be 30 days stale.
+- **Clients**: the extension side is built (see below); the website's `/verify` and
+  `/view-my-links` are not.
 - **Bachs' webhook format is unverified.** It is isolated in `backend/src/bachs.ts`; confirm
   it against Bachs' documentation before launch.
 - Run `npm run typecheck` and the e2e suite (`backend/README.md`) after backend changes.
   Any change to a route's request or response shape must be made in the extension and
   website clients too.
 
+## Premium Share Links
+
+The extension half of Premium (premium build only; everything is behind `PREMIUM_ENABLED`).
+
+- **Who holds what.** The session token lives in `chrome.storage.local` and is
+  used only by the service worker, the side panel, and (passed in the stop
+  command) the offscreen document, which has no `chrome.storage`. The page gets
+  an `AccountSummary` without the token. API calls never come from the content
+  script: it is not CORS-exempt.
+- **Sign-in.** Record view → `premium-sign-in` → magic link → the website's
+  `/verify` exchanges the token and sends `{ kind: "capann-session", token }`
+  via `chrome.runtime.sendMessage(extensionId, …)`. The worker accepts it only
+  from `siteUrl` and confirms the token with `GET /api/auth/session` before
+  storing it.
+- **Paid check.** The stop uses the cached `paid` claim; the server re-checks on
+  upload. A 402 falls back to a local save and marks the session unpaid; a 401
+  signs out. The Record view re-checks `paid` when it opens and on window focus,
+  which is how an upgrade made in the checkout tab appears.
+- **Stop → share.** `sendRecorderCommand("stop")` adds `share: { token,
+  copyPreference }`. `finalize()` then sends the terminal `sharing` status and
+  starts a job in `offscreen/share.ts`. A recording that ends on its own (tab
+  closed) has no stop command and is saved locally.
+- **Share jobs** live in the offscreen document, not the worker: the worker can
+  be stopped after ~30 s idle, shorter than a presenter may take to answer "Save
+  a copy?". Each job publishes `ShareJobStatus` with its own `tabId`; the
+  worker relays it to the tab and saves the link to history.
+- **Never lose a recording.** A failed upload saves the local copy whatever was
+  chosen. The Blob is released only after the upload succeeded or the copy
+  reached Downloads. Start is disabled ("Finishing your link…") until then.
+- **Clipboard.** The page copies the link with `navigator.clipboard` as soon as
+  it exists. That needs the tab focused; otherwise the card shows a Copy button.
+  There is no `clipboardWrite` permission on purpose (it adds an install warning).
+- **Side panel.** `premium-open-links` calls `sidePanel.open()` synchronously in
+  the message handler (it needs the click's user gesture) and falls back to
+  opening `sidepanel.html` in a tab.
+
 ## Explicitly Out of Scope
 
 - **Screen or window recording.** Would require an explicit source picker and `desktopCapture.chooseDesktopMedia` from a visible extension page, since the service worker needs a `targetTab` and that stream cannot be consumed by an offscreen document. Do not implement unless asked directly.
 - **Uploading or sharing recordings in the free tier.** Free recordings stay local; cloud links are Premium only, through `backend/`.
+- **`clipboardWrite` permission.** Auto-copy uses the page's clipboard and falls back to a Copy button; the permission would add an install warning.
 
 ## Future Considerations
 

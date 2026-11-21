@@ -16,7 +16,7 @@
  */
 
 import { build, context } from 'esbuild';
-import { mkdirSync, copyFileSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,19 +28,48 @@ const watch = process.argv.includes('--watch');
 // the default for the checked-out branch (dev/premium: premium, free: free).
 const EDITIONS = ['free', 'premium'];
 const config = JSON.parse(readFileSync(path.join(root, 'capann.config.json'), 'utf8'));
-const editionArg = process.argv.find((arg) => arg.startsWith('--edition='));
-const edition = editionArg ? editionArg.slice('--edition='.length) : config.edition;
+const argValue = (name) =>
+  process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+const edition = argValue('edition') ?? config.edition;
 if (!EDITIONS.includes(edition)) {
   console.error(`Unknown edition "${edition}". Use one of: ${EDITIONS.join(', ')}.`);
   process.exit(1);
 }
+const premium = edition === 'premium';
+
+// Premium backend and website. `--api-url=` / `--site-url=` point a local build
+// at `wrangler dev` and the website's dev server without editing the config.
+function origin(name, value) {
+  try {
+    const url = new URL(value);
+    if (url.pathname !== '/' || url.search || url.hash) throw new Error('path');
+    return url.origin;
+  } catch {
+    console.error(`${name} must be a bare origin like https://example.com, got "${value}".`);
+    process.exit(1);
+  }
+}
+const apiUrl = origin('apiUrl', argValue('api-url') ?? config.apiUrl);
+const siteUrl = origin('siteUrl', argValue('site-url') ?? config.siteUrl);
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(path.join(dist, 'icons'), { recursive: true });
 mkdirSync(path.join(dist, 'offscreen'), { recursive: true });
 mkdirSync(path.join(dist, 'permissions'), { recursive: true });
 
-copyFileSync(path.join(root, 'manifest.json'), path.join(dist, 'manifest.json'));
+// The manifest is generated per edition. The free build ships exactly
+// manifest.json; Premium adds only what links need: the side panel, and the
+// website as the one page allowed to hand the extension a sign-in session.
+const manifest = JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+if (premium) {
+  manifest.permissions = [...manifest.permissions, 'sidePanel'];
+  manifest.side_panel = { default_path: 'sidepanel.html' };
+  // Match patterns cannot name a port, and a pattern without one matches all,
+  // so a localhost dev site still connects.
+  const site = new URL(siteUrl);
+  manifest.externally_connectable = { matches: [`${site.protocol}//${site.hostname}/*`] };
+}
+writeFileSync(path.join(dist, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 for (const file of readdirSync(path.join(root, 'icons'))) {
   copyFileSync(path.join(root, 'icons', file), path.join(dist, 'icons', file));
 }
@@ -53,6 +82,11 @@ const entryPoints = {
   'offscreen/recorder': path.join(root, 'src/offscreen/recorder.ts'),
   'permissions/permissions': path.join(root, 'src/permissions/permissions.ts'),
 };
+if (premium) {
+  mkdirSync(path.join(dist, 'sidepanel'), { recursive: true });
+  copyFileSync(path.join(root, 'src/sidepanel/sidepanel.html'), path.join(dist, 'sidepanel.html'));
+  entryPoints['sidepanel/sidepanel'] = path.join(root, 'src/sidepanel/sidepanel.tsx');
+}
 
 const options = {
   entryPoints,
@@ -64,14 +98,19 @@ const options = {
   logLevel: 'info',
   jsx: 'automatic',
   jsxDev: false,
-  define: { __CAPANN_EDITION__: JSON.stringify(edition) },
+  define: {
+    __CAPANN_EDITION__: JSON.stringify(edition),
+    __CAPANN_API_URL__: JSON.stringify(apiUrl),
+    __CAPANN_SITE_URL__: JSON.stringify(siteUrl),
+  },
 };
 
+const target = premium ? ` (api ${apiUrl}, site ${siteUrl})` : '';
 if (watch) {
   const ctx = await context(options);
   await ctx.watch();
-  console.log(`Watching for changes (${edition} edition)...`);
+  console.log(`Watching for changes (${edition} edition${target})...`);
 } else {
   await build(options);
-  console.log(`Built ${edition} edition into ${dist}`);
+  console.log(`Built ${edition} edition into ${dist}${target}`);
 }
