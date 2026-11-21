@@ -9,6 +9,8 @@
 5. Update this handbook when a change alters architecture, annotation behavior, storage, or the contributor workflow.
 6. Run `npm run typecheck` and `npm run build` before handing off the change.
 
+For backend changes (`backend/`), follow the rules in [Premium backend](backend.md#rules-when-changing-the-backend), run `npm run typecheck` and the end-to-end suite inside `backend/`, and treat any change to a request or response shape as a contract change: update the extension and website clients and `backend/README.md` together.
+
 For recording changes, also update [Recording](recording.md). Check all three typed message boundaries (content script, service worker, and offscreen document), preserve tab-specific capture invocation, and ensure capture errors do not result in a download.
 
 ## Adding an annotation behavior

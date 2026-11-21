@@ -11,7 +11,9 @@ does two jobs from one in-page overlay:
    bubble, microphone, and tab audio, with the overlay and annotations hidden
    from the frames.
 
-Everything runs locally. No network calls, no accounts, no uploads.
+The free features run entirely locally: no network calls, no accounts, no uploads. Premium
+(cloud links for recordings) is backed by a separate Cloudflare Worker in `backend/`; see
+[Premium Backend](#premium-backend). The extension does not call it yet.
 
 ## Branch Strategy
 
@@ -30,7 +32,8 @@ code and differ only in `capann.config.json`:
   which is what `npm run build:free` / `build:premium` and
   `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
 - Annotation and instant tab recording are free in every edition. Premium is
-  reserved for the browser-AI layer and shareable links (not built yet).
+  reserved for the browser-AI layer and shareable cloud links. The backend for
+  links exists in `backend/`; the extension and website sides are not built yet.
   `src/shared/features.ts` derives `PREMIUM_ENABLED` from the edition; gate
   Premium features on it in both the UI and the service worker. Nothing reads
   it yet, so today both editions build the same extension.
@@ -207,6 +210,8 @@ scripts/
   smoke-test.mjs           Playwright automated testing
 learn/                     Accurate handbook: architecture, annotations, recording,
                            making-changes. Read this before large changes.
+backend/                   Separate Cloudflare Worker project (own package.json) for
+                           Premium; not part of the extension build. See backend/README.md
 ```
 
 ### Runtime Flow
@@ -433,10 +438,30 @@ Manual checks worth running for any non-trivial change:
 - One-time camera/microphone grant page
 - PNG export composited with annotations
 
+## Premium Backend
+
+`backend/` is a standalone Cloudflare Worker (TypeScript, Wrangler) with its own
+`package.json`, `tsconfig.json`, and tests. The extension's `tsconfig.json` and
+`build.mjs` only cover `src/`, so the two never build together.
+
+- **Identity**: no accounts. A user is an email address proven by short-lived HS256 tokens
+  with a purpose claim (`login`, `links`, `session`, `upload`); each route accepts only its purposes.
+- **State**: KV `sub:<email>` (written only by the Bachs webhook), R2 `recordings/<uuid>.<ext>`
+  plus an `owners/<sha256(email)>/` index, and a `RateLimiter` Durable Object for
+  rate limits (3 emails per address, 10 per IP, per 15 min) and single-use login links.
+- **Retention**: R2 lifecycle deletes both prefixes after 7 days (`backend/r2-lifecycle.json`);
+  the Worker also refuses anything older than 7 days, because lifecycle deletion lags.
+- **Uploads re-check KV**, not the session's `paid` claim, which can be 30 days stale.
+- **Bachs' webhook format is unverified.** It is isolated in `backend/src/bachs.ts`; confirm
+  it against Bachs' documentation before launch.
+- Run `npm run typecheck` and the e2e suite (`backend/README.md`) after backend changes.
+  Any change to a route's request or response shape must be made in the extension and
+  website clients too.
+
 ## Explicitly Out of Scope
 
 - **Screen or window recording.** Would require an explicit source picker and `desktopCapture.chooseDesktopMedia` from a visible extension page, since the service worker needs a `targetTab` and that stream cannot be consumed by an offscreen document. Do not implement unless asked directly.
-- **Uploading or sharing recordings.** Everything stays local.
+- **Uploading or sharing recordings in the free tier.** Free recordings stay local; cloud links are Premium only, through `backend/`.
 
 ## Future Considerations
 

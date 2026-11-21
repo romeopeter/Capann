@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "capann-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+
+  // Plain-text settings. Secrets (JWT_SECRET, RESEND_API_KEY,
+  // BACHS_WEBHOOK_SECRET) are set with `wrangler secret put`, never here.
+  "vars": {
+    "SITE_URL": "https://REPLACE-WITH-YOUR-SITE.example",
+    "ALLOWED_ORIGINS": "",
+    "EMAIL_FROM": "Capann <login@REPLACE-WITH-YOUR-DOMAIN.example>",
+    "EMAIL_TRANSPORT": "resend",
+    "BACHS_CHECKOUT_URL": "https://REPLACE-WITH-BACHS-CHECKOUT.example/?email={email}",
+    "MAX_UPLOAD_BYTES": "99614720",
+    "MAX_RECORDING_BYTES": "2147483648"
+  },
+
+  "kv_namespaces": [
+    // `npx wrangler kv namespace create SUBSCRIPTIONS`, then paste the id.
+    { "binding": "SUBSCRIPTIONS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+
+  "r2_buckets": [
+    // `npx wrangler r2 bucket create capann-recordings`
+    { "binding": "RECORDINGS", "bucket_name": "capann-recordings" }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }]
+}

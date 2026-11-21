@@ -1,8 +1,9 @@
 # Capann
 
 Chrome extension (Manifest V3) for presenting over a screen share: annotate any
-web page, and record the tab to a local WebM. Everything runs locally — no
-accounts, no network calls, no uploads.
+web page, and record the tab to a local WebM. The free features run entirely
+locally — no accounts, no network calls, no uploads. Premium cloud links are
+backed by a separate Cloudflare Worker in [`backend/`](backend/README.md).
 
 ## Features
 

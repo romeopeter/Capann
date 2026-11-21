@@ -33,3 +33,9 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 Chrome pages such as `chrome://` are protected and cannot be captured or receive the content overlay. If action invocation or tab access has expired, click the Capann action on the target website again before starting capture. The action title/badge reports unavailable pages and capture errors.
 
 Use `npm run typecheck` to check TypeScript and `npm run build` to create the unpacked extension in `dist/`.
+
+## Premium backend
+
+Shareable links need a server. It lives in `backend/`, a Cloudflare Worker with its own `package.json`, `tsconfig.json`, and tests; the extension build never compiles it. It handles magic-link sign-in, Bachs subscription webhooks, recording uploads to R2, link recovery, and public playback, with no accounts or database. See [Premium backend](backend.md) for the design and [`backend/README.md`](../backend/README.md) for setup.
+
+The extension does not call the backend yet. When it does, uploads belong in the offscreen document or service worker (CORS-exempt for hosts in `host_permissions`), not the content script, and Premium UI should be gated on `PREMIUM_ENABLED`.
