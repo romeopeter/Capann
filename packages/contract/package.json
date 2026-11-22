@@ -1,0 +1,13 @@
+{
+  "name": "@capann/contract",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What crosses a boundary between Capann's pieces: API shapes, error codes, limits, and the website-to-extension messages.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

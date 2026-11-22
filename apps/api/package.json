@@ -1,0 +1,22 @@
+{
+  "name": "@capann/api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker backend for Capann Premium: magic-link auth, Bachs webhooks, R2 recording uploads, and link recovery.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "lifecycle:apply": "wrangler r2 bucket lifecycle set capann-recordings --file r2-lifecycle.json",
+    "test:e2e": "node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261120.1",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.165.0"
+  },
+  "dependencies": {
+    "@capann/contract": "*"
+  }
+}

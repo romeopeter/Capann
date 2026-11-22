@@ -15,8 +15,45 @@ does two jobs from one in-page overlay:
    from the frames.
 
 The free features run entirely locally: no network calls, no accounts, no uploads. Premium
-(cloud links for recordings) is backed by a separate Cloudflare Worker in `backend/`; see
+(cloud links for recordings) is backed by a separate Cloudflare Worker in `apps/api/`; see
 [Premium Backend](#premium-backend) and [Premium Share Links](#premium-share-links).
+
+## Repository Layout
+
+Capann is an npm-workspaces monorepo. Each app builds or deploys on its own;
+code that crosses between them lives in `packages/`.
+
+| Path | Package | What |
+|---|---|---|
+| `apps/extension/` | `@capann/extension` | The Chrome extension (everything under [Architecture](#architecture)) |
+| `apps/api/` | `@capann/api` | The Premium Cloudflare Worker ([Premium Backend](#premium-backend)) |
+| `packages/contract/` | `@capann/contract` | What crosses a boundary: API request/response types, error codes, route paths, limits, website → extension messages and replies |
+| `packages/api-client/` | `@capann/api-client` | fetch client for the API's JSON routes, plus `ApiError`; used by the extension, usable by the website |
+
+- **One install, one lockfile** at the root. `tsconfig.base.json` holds the
+  shared compiler options; each workspace extends it and adds only its runtime
+  (DOM + `chrome`, Workers, or nothing).
+- **No package build step.** Packages export their TypeScript source
+  (`"exports": "./src/index.ts"`); esbuild and Wrangler compile them inline.
+- **`@capann/contract` imports nothing** and its tsconfig loads no DOM, chrome,
+  or Workers types, so every runtime can import it. The API checks its
+  responses with `satisfies <ContractType>`, and `HttpError` only accepts an
+  `ApiErrorCode`, so changing a shape on one side breaks the other's typecheck.
+- **What stays in an app:** the extension's internal messages
+  (`src/shared/types.ts`), annotation, recording, the uploader (it needs XHR
+  upload progress), and the edition system; the API's secrets, JWT signing,
+  storage, rate limiting, and Bachs code. Never move server-only logic into a
+  package a client imports.
+- **The website is a separate repository.** It keeps a copy of the contract
+  parts it uses (`WEBSITE_PATHS`, `WebsiteToExtensionMessage` and its replies,
+  the link-list and session shapes).
+- **Root scripts:** `npm run typecheck` (every workspace); `build`, `build:free`,
+  `build:premium`, `build:backend`, `watch*` (extension); `test:wiring`,
+  `test:premium`; `api:dev`, `api:test`, `api:deploy`.
+
+**Paths in this file:** unless a path starts with `apps/` or `packages/`,
+extension paths (`src/…`, `scripts/…`, `manifest.json`, `capann.config.json`,
+`icons/`, `dist/`) are relative to `apps/extension/`.
 
 ## Branch Strategy
 
@@ -36,7 +73,7 @@ code and differ only in `capann.config.json`:
   `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
 - Annotation and instant tab recording are free in every edition. Premium is
   reserved for the browser-AI layer and shareable cloud links. Links are built
-  in the extension and `backend/`; the website's `/verify` and `/view-my-links`
+  in the extension and `apps/api/`; the website's `/verify` and `/view-my-links`
   pages are not built yet. `src/shared/features.ts` derives `PREMIUM_ENABLED`
   from the edition; gate Premium features on it in both the UI and the service
   worker. The free build shows one teaser link to the pricing page and nothing
@@ -207,7 +244,7 @@ controls, and camera preview would disappear from the video.
 
 ## Architecture
 
-### Extension Structure
+### Extension Structure (`apps/extension/`)
 
 ```
 manifest.json              Chrome extension manifest (Manifest V3)
@@ -255,21 +292,23 @@ src/sidepanel/             Side panel, every build: Screenshot style tab (style-
                            premium adds the Links tab (links-panel.tsx)
 src/shared/
   types.ts                 Annotation types, tool ids, recording status/stages/error
-                           codes, and all message contracts
+                           codes, and the extension's message contracts (what crosses
+                           to the API or website is re-exported from @capann/contract)
   features.ts              Edition gate, API_URL / SITE_URL / PRICING_URL
   screenshot-style.ts      Screenshot frame style: presets, storage, layout, drawFrame
-  premium/api.ts           Backend JSON client (worker + side panel only)
   premium/store.ts         chrome.storage.local: session, copy preference, link history
+                           (the API client itself is @capann/api-client)
 scripts/
-  build.mjs                esbuild bundler (TypeScript + React -> JavaScript), 4 entry points
+  build.mjs                esbuild bundler (TypeScript + React -> JavaScript), 5 entry points
   gen-icons.js             Icon generator script (no external deps)
   smoke-test.mjs           Playwright automated testing
-  premium-e2e.mjs          Premium client (api.ts + uploader.ts) against wrangler dev
+  premium-e2e.mjs          Premium client (@capann/api-client + uploader.ts) against wrangler dev
 learn/                     Accurate handbook: architecture, annotations, recording,
                            making-changes. Read this before large changes.
-backend/                   Separate Cloudflare Worker project (own package.json) for
-                           Premium; not part of the extension build. See backend/README.md
 ```
+
+`learn/` sits at the repository root; `apps/api/` and `packages/` are described
+under [Repository Layout](#repository-layout).
 
 ### Runtime Flow
 
@@ -456,18 +495,21 @@ Do not switch the offscreen, permission, or side panel bundles to ESM: their HTM
 
 ## Development Workflow
 
+All from the repository root:
+
 ```bash
-npm install          # Install dependencies
-npm run build        # Type check + bundle to dist/ (edition from capann.config.json)
+npm install          # One install for every workspace
+npm run build        # Type check + bundle to apps/extension/dist/ (edition from capann.config.json)
 npm run build:free   # ...as the free edition
 npm run build:premium # ...as the premium edition
 npm run watch        # Auto-rebuild on file changes (also watch:free / watch:premium)
-npm run typecheck    # Type check only
+npm run typecheck    # Type check every workspace (extension, api, packages)
+npm run test:wiring  # Recorder/worker wiring against the built extension
 ```
 
-Load unpacked extension from `dist/` in Chrome (`chrome://extensions` → Developer Mode → Load unpacked). Reload the extension in `chrome://extensions` after each rebuild; then reload the target tab, since content scripts do not re-inject into open pages.
+Load unpacked extension from `apps/extension/dist/` in Chrome (`chrome://extensions` → Developer Mode → Load unpacked). Reload the extension in `chrome://extensions` after each rebuild; then reload the target tab, since content scripts do not re-inject into open pages.
 
-To exercise Premium locally, run the backend (`cd backend && npx wrangler dev --port 8799`) and build with `node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173`.
+To exercise Premium locally, run the API (`npm run api:dev -- --port 8799`, with `apps/api/.dev.vars` from `.dev.vars.example`) and build with `npm run build:backend` (premium, pointed at `http://127.0.0.1:8799` and `http://localhost:5173`). `npm run api:test` and `npm run test:premium` run the API's and the client's end-to-end suites against it.
 
 ## Code Patterns & Conventions
 
@@ -489,9 +531,9 @@ To exercise Premium locally, run the backend (`cd backend && npx wrangler dev --
 
 ## Testing
 
-- Playwright smoke test: `scripts/smoke-test.mjs`
-- Loads the extension in a real Chromium instance
-- Tests basic activation and tool interaction
+- `npm run test:wiring`: recorder/worker wiring against the built extension (either edition)
+- `npm run api:test` and `npm run test:premium`: the API's and the extension client's end-to-end suites against `wrangler dev`
+- `scripts/smoke-test.mjs` (Playwright) is out of date: it is hard-wired to another machine's paths and an old tool selector
 
 Manual checks worth running for any non-trivial change:
 1. `npm run typecheck && npm run build`
@@ -520,25 +562,27 @@ Manual checks worth running for any non-trivial change:
 
 ## Premium Backend
 
-`backend/` is a standalone Cloudflare Worker (TypeScript, Wrangler) with its own
-`package.json`, `tsconfig.json`, and tests. The extension's `tsconfig.json` and
-`build.mjs` only cover `src/`, so the two never build together.
+`apps/api/` is the Cloudflare Worker (TypeScript, Wrangler), a workspace with its
+own `package.json`, `tsconfig.json`, and tests. It shares nothing with the
+extension at runtime except `@capann/contract`, which defines every request and
+response shape, error code, route path, and limit the two agree on.
 
 - **Identity**: no accounts. A user is an email address proven by short-lived HS256 tokens
   with a purpose claim (`login`, `links`, `session`, `upload`); each route accepts only its purposes.
 - **State**: KV `sub:<email>` (written only by the Bachs webhook), R2 `recordings/<uuid>.<ext>`
   plus an `owners/<sha256(email)>/` index, and a `RateLimiter` Durable Object for
   rate limits (3 emails per address, 10 per IP, per 15 min) and single-use login links.
-- **Retention**: R2 lifecycle deletes both prefixes after 7 days (`backend/r2-lifecycle.json`);
+- **Retention**: R2 lifecycle deletes both prefixes after 7 days (`apps/api/r2-lifecycle.json`);
   the Worker also refuses anything older than 7 days, because lifecycle deletion lags.
 - **Uploads re-check KV**, not the session's `paid` claim, which can be 30 days stale.
 - **Clients**: the extension side is built (see below); the website's `/verify` and
   `/view-my-links` are not.
-- **Bachs' webhook format is unverified.** It is isolated in `backend/src/bachs.ts`; confirm
+- **Bachs' webhook format is unverified.** It is isolated in `apps/api/src/bachs.ts`; confirm
   it against Bachs' documentation before launch.
-- Run `npm run typecheck` and the e2e suite (`backend/README.md`) after backend changes.
-  Any change to a route's request or response shape must be made in the extension and
-  website clients too.
+- Run `npm run typecheck` (every workspace) and `npm run api:test` after backend changes.
+  Change a route's request or response shape in `@capann/contract` first: the
+  extension then fails to typecheck until it is updated too. The website (a
+  separate repository) must be updated by hand.
 
 ## Premium Share Links
 
@@ -580,7 +624,7 @@ The extension half of Premium (premium build only; everything is behind `PREMIUM
 ## Explicitly Out of Scope
 
 - **Screen or window recording.** Would require an explicit source picker and `desktopCapture.chooseDesktopMedia` from a visible extension page, since the service worker needs a `targetTab` and that stream cannot be consumed by an offscreen document. Do not implement unless asked directly.
-- **Uploading or sharing recordings in the free tier.** Free recordings stay local; cloud links are Premium only, through `backend/`.
+- **Uploading or sharing recordings in the free tier.** Free recordings stay local; cloud links are Premium only, through `apps/api/`.
 - **`clipboardWrite` permission.** Auto-copy uses the page's clipboard and falls back to a Copy button; the permission would add an install warning.
 
 ## Future Considerations

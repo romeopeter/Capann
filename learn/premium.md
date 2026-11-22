@@ -168,11 +168,11 @@ refuses, it opens `sidepanel.html#links` in a tab.
 ## Testing
 
 ```bash
-cd backend && npx wrangler dev --port 8799 > .wrangler-dev.log 2>&1 &
-node scripts/premium-e2e.mjs
+cd apps/api && npx wrangler dev --port 8799 > .wrangler-dev.log 2>&1 &
+cd ../.. && npm run test:premium
 ```
 
-`premium-e2e.mjs` bundles `api.ts` and `uploader.ts` for Node and runs them
+`premium-e2e.mjs` bundles `@capann/api-client` and `uploader.ts` for Node and runs them
 against the real Worker: sign-in, the payment gate, single and multipart uploads
 (byte-for-byte), part retries and abort, the link list, the rate limit, and
 cancellation.
@@ -180,11 +180,11 @@ cancellation.
 The UI needs a browser. Build against the local backend and website:
 
 ```bash
-node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173
+npm run build:backend   # premium, pointed at 127.0.0.1:8799 and localhost:5173
 ```
 
 Then check by hand: sign in (the link is printed in `.wrangler-dev.log`; until
 the website exists, exchange it with `POST /api/auth/verify` and send the
 session from a page on `siteUrl`), upgrade (simulate the webhook as in
-`backend/scripts/e2e.mjs`), record and stop, answer the dialog, and open
+`apps/api/scripts/e2e.mjs`), record and stop, answer the dialog, and open
 **My links**.

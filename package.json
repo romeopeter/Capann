@@ -1,28 +1,24 @@
 {
-  "name": "capann",
-  "version": "1.0.0",
+  "name": "capann-monorepo",
   "private": true,
-  "description": "Capann — pencil, arrow pointer, highlighter, shapes, text and laser/spotlight annotation overlay for screen-sharing.",
+  "description": "Capann: the Chrome extension (apps/extension), its Premium API (apps/api), and the code they share (packages/).",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && node scripts/build.mjs",
-    "build:free": "npm run typecheck && node scripts/build.mjs --edition=free",
-    "build:premium": "npm run typecheck && node scripts/build.mjs --edition=premium",
-    "watch": "node scripts/build.mjs --watch",
-    "watch:free": "node scripts/build.mjs --watch --edition=free",
-    "watch:premium": "node scripts/build.mjs --watch --edition=premium",
-    "build:backend": "node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173"
-  },
-  "devDependencies": {
-    "@types/chrome": "^0.0.287",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
-    "esbuild": "^0.28.1",
-    "typescript": "^5.6.3"
-  },
-  "dependencies": {
-    "@phosphor-icons/react": "^2.1.10",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @capann/extension",
+    "build:free": "npm run build:free -w @capann/extension",
+    "build:premium": "npm run build:premium -w @capann/extension",
+    "build:backend": "npm run build:backend -w @capann/extension",
+    "watch": "npm run watch -w @capann/extension",
+    "watch:free": "npm run watch:free -w @capann/extension",
+    "watch:premium": "npm run watch:premium -w @capann/extension",
+    "test:wiring": "npm run test:wiring -w @capann/extension",
+    "test:premium": "npm run test:premium -w @capann/extension",
+    "api:dev": "npm run dev -w @capann/api",
+    "api:test": "npm run test:e2e -w @capann/api",
+    "api:deploy": "npm run deploy -w @capann/api"
   }
 }

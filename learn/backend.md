@@ -1,13 +1,14 @@
 # Premium backend
 
 Premium turns a local recording into a shareable link. That needs a server, and
-it lives in `backend/`: a Cloudflare Worker that is a **separate project** from
-the extension — its own `package.json`, `tsconfig.json`, and tests. The
-extension build (`build.mjs`, the root `tsconfig.json`) only covers `src/`, so
-the two never compile together.
+it lives in `apps/api/`: a Cloudflare Worker that is its own workspace in the
+monorepo — its own `package.json`, `tsconfig.json`, and tests. It shares no
+runtime code with the extension. What the two must agree on (request and
+response shapes, error codes, route paths, limits) lives in `@capann/contract`
+(`packages/contract`), which both import.
 
 This note explains how the backend is designed and why. For setup, deploy
-commands, and the full route table, see [`backend/README.md`](../backend/README.md).
+commands, and the full route table, see [`apps/api/README.md`](../apps/api/README.md).
 
 > **Status:** the Worker and the extension client are built and pass end-to-end
 > suites locally ([Premium share links](premium.md) covers the extension). The
@@ -54,7 +55,7 @@ unpaid for up to a minute. That's an acceptable trade for KV's cheap, fast reads
 ## Tokens
 
 All tokens are HS256 JWTs signed with one secret (`JWT_SECRET`) using Web
-Crypto (`backend/src/jwt.ts`). Each carries a **purpose** claim, and each route
+Crypto (`apps/api/src/jwt.ts`). Each carries a **purpose** claim, and each route
 accepts only specific purposes — this is the main defense against a token being
 used somewhere it wasn't meant for.
 
@@ -151,7 +152,7 @@ not a public bucket:
 
 Recordings live 7 days. Two things enforce that, and both are needed:
 
-1. **R2 lifecycle rules** (`backend/r2-lifecycle.json`) delete `recordings/` and
+1. **R2 lifecycle rules** (`apps/api/r2-lifecycle.json`) delete `recordings/` and
    `owners/` objects after 604,800 seconds. No cron, no cleanup Worker. But R2
    applies rules asynchronously — deletion can lag by up to about a day.
 2. **The Worker checks age itself.** Playback returns `410 Gone` and the list
@@ -185,15 +186,17 @@ so uploads must come from the offscreen document or service worker.
    Lifecycle deletion alone is not on time.
 4. **Public URLs contain only `<uuid>.<ext>`** — no email, no hash, no index key.
 5. **Counters and once-only decisions go in the Durable Object**, not KV.
-6. **A change to a request or response shape is a contract change.** Update the
-   extension and website clients in the same change, and `backend/README.md`.
-7. **Keep processor-specific code in `backend/src/bachs.ts`**, so swapping or
+6. **A change to a request or response shape is a contract change.** Change
+   `@capann/contract` first; the extension then fails to typecheck until it is
+   updated in the same change. Update the website (a separate repository) and
+   `apps/api/README.md` too.
+7. **Keep processor-specific code in `apps/api/src/bachs.ts`**, so swapping or
    fixing the payment integration touches one file.
 
 ## Testing
 
 ```bash
-cd backend
+cd apps/api
 npm run typecheck
 cp .dev.vars.example .dev.vars
 npx wrangler dev --port 8799 > .wrangler-dev.log 2>&1 &
@@ -210,7 +213,7 @@ recovery, the rate limit, cancellation, and CORS. It does **not** cover the
 ## Open items
 
 - **Bachs is unverified.** The signature header and encoding, payload shape, and
-  event names in `backend/src/bachs.ts` are assumptions listed at the top of the
+  event names in `apps/api/src/bachs.ts` are assumptions listed at the top of the
   file. Confirm them against Bachs' documentation before launch, along with the
   `{email}` placeholder in `BACHS_CHECKOUT_URL`.
 - **The website isn't built.** It needs `/verify` and `/view-my-links`. The

@@ -1,5 +1,7 @@
 # Architecture
 
+The repository is an npm-workspaces monorepo: the extension in `apps/extension/`, the Premium API in `apps/api/`, and what they share in `packages/` (`@capann/contract`, `@capann/api-client`). Extension paths below (`src/…`) are relative to `apps/extension/`.
+
 Capann is a Manifest V3 Chrome extension. The service worker handles extension lifecycle events, tab capture, downloads, keyboard commands, and the action badge. A content script injects one React app into each supported page. Recording media is composed in a dedicated offscreen document.
 
 ## Runtime flow
@@ -38,10 +40,10 @@ Capann is a Manifest V3 Chrome extension. The service worker handles extension l
 
 Chrome pages such as `chrome://` are protected and cannot be captured or receive the content overlay. If action invocation or tab access has expired, click the Capann action on the target website again before starting capture. The action title/badge reports unavailable pages and capture errors.
 
-Use `npm run typecheck` to check TypeScript and `npm run build` to create the unpacked extension in `dist/`.
+Use `npm run typecheck` (from the repository root) to check every workspace and `npm run build` to create the unpacked extension in `apps/extension/dist/`.
 
 ## Premium backend
 
-Shareable links need a server. It lives in `backend/`, a Cloudflare Worker with its own `package.json`, `tsconfig.json`, and tests; the extension build never compiles it. It handles magic-link sign-in, Bachs subscription webhooks, recording uploads to R2, link recovery, and public playback, with no accounts or database. See [Premium backend](backend.md) for the design and [`backend/README.md`](../backend/README.md) for setup.
+Shareable links need a server. It lives in `apps/api/`, a Cloudflare Worker workspace with its own `package.json`, `tsconfig.json`, and tests; the extension build never compiles it. The two share only `@capann/contract` (`packages/contract`): every request and response shape, error code, route path, and limit they agree on. It handles magic-link sign-in, Bachs subscription webhooks, recording uploads to R2, link recovery, and public playback, with no accounts or database. See [Premium backend](backend.md) for the design and [`apps/api/README.md`](../apps/api/README.md) for setup.
 
 The premium build calls it from the service worker, the offscreen document (uploads), and the side panel, which are CORS-exempt for hosts in `host_permissions`; the content script never does. See [Premium share links](premium.md). The website pages that complete sign-in (`/verify`) and link recovery (`/view-my-links`) are a separate codebase and not built yet.

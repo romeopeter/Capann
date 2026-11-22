@@ -1,10 +1,21 @@
 # Capann
 
 Chrome extension (Manifest V3) for presenting over a screen share: annotate any
-web page, take framed screenshots, and record the tab to a local WebM. The free features run entirely
-locally — no accounts, no network calls, no uploads. Premium turns a recording
-into a 7-day share link, backed by a separate Cloudflare Worker in
-[`backend/`](backend/README.md).
+web page, take framed screenshots, and record the tab to a local WebM. The free
+features run entirely locally — no accounts, no network calls, no uploads.
+Premium turns a recording into a 7-day share link, backed by a Cloudflare
+Worker in [`apps/api/`](apps/api/README.md).
+
+This repository is an npm-workspaces monorepo:
+
+| Path | What |
+|---|---|
+| [`apps/extension/`](apps/extension) | The Chrome extension |
+| [`apps/api/`](apps/api/README.md) | The Premium API (Cloudflare Worker) |
+| [`packages/contract/`](packages/contract/src/index.ts) | What the extension, API, and website agree on: request/response types, error codes, routes, limits, website → extension messages |
+| [`packages/api-client/`](packages/api-client/src/index.ts) | fetch client for the API, used by the extension |
+
+The website (`/verify`, `/view-my-links`, pricing) is a separate repository.
 
 ## Features
 
@@ -85,48 +96,71 @@ code; they differ only in `capann.config.json`.
 Work and test on `dev`, then merge `dev` into `free` and `premium`. Never edit
 the edition in `capann.config.json` on `dev` and never hardcode an edition in
 source — use the edition build commands below. The gate (`PREMIUM_ENABLED`)
-lives in `src/shared/features.ts`. The premium build adds the account row, share
+lives in `apps/extension/src/shared/features.ts`. The premium build adds the account row, share
 flow, and the side panel's Links tab, and its manifest adds
 `externally_connectable` for the website; the free manifest is `manifest.json`
 unchanged (the side panel, with its Screenshot tab, is in both).
 
 ## Build
 
+Everything runs from the repository root:
+
 ```
-npm install
-npm run build           # typecheck + bundle into dist/ (edition from capann.config.json)
+npm install             # one install for every workspace
+npm run build           # typecheck + bundle into apps/extension/dist/ (edition from capann.config.json)
 npm run build:free      # free edition
 npm run build:premium   # premium edition
 npm run watch           # rebuild on change (also watch:free / watch:premium)
-npm run typecheck       # typecheck only
+npm run typecheck       # typecheck every workspace: extension, api, packages
 ```
 
-The build prints `Built <edition> edition` — check it before loading `dist/`.
+The build prints `Built <edition> edition` — check it before loading the build.
 
-`capann.config.json` also sets the Premium backend (`apiUrl`) and website
-(`siteUrl`). To try Premium against a local backend and website without
+`apps/extension/capann.config.json` also sets the Premium backend (`apiUrl`) and
+website (`siteUrl`). To try Premium against a local API and website without
 editing it:
 
 ```
-node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173
+npm run api:dev -- --port 8799   # needs apps/api/.dev.vars (copy .dev.vars.example)
+npm run build:backend            # premium build pointed at 127.0.0.1:8799 and localhost:5173
 ```
 
-Load `dist/` as an unpacked extension: `chrome://extensions` → enable Developer
-Mode → **Load unpacked** → select the `dist` folder. After each rebuild, reload
-the extension there and then reload the page you're testing, since content
-scripts don't re-inject into open tabs.
+Load `apps/extension/dist/` as an unpacked extension: `chrome://extensions` →
+enable Developer Mode → **Load unpacked** → select that folder. After each
+rebuild, reload the extension there and then reload the page you're testing,
+since content scripts don't re-inject into open tabs. (Chrome derives an
+unpacked extension's ID from its folder, so loading it from a new folder gives
+it a new ID.)
 
 ### Tests
 
 ```
-node scripts/record-wiring-test.mjs   # recorder/worker wiring against dist/ (either edition)
-node scripts/smoke-test.mjs           # Playwright: loads the built extension in Chromium
-node scripts/premium-e2e.mjs          # Premium client (API + uploader) against `wrangler dev`
+npm run test:wiring    # recorder/worker wiring against the built extension (either edition)
+npm run api:test       # the API end to end, against `npm run api:dev`
+npm run test:premium   # the extension's Premium client (api-client + uploader) against the same
 ```
+
+`apps/extension/scripts/smoke-test.mjs` is out of date (hard-wired to another
+machine's paths).
+
+### Deploy the API
+
+See [`apps/api/README.md`](apps/api/README.md); `npm run api:deploy` runs
+`wrangler deploy`.
 
 ## Project layout
 
 ```
+package.json             Workspace root: scripts for every app
+tsconfig.base.json       Compiler options every workspace extends
+AGENTS.md, learn/        How it all works, and how to change it
+
+packages/contract/       Shared types, error codes, routes, limits (imports nothing)
+packages/api-client/     fetch client for the API
+
+apps/api/                Premium API: Cloudflare Worker, R2, KV, Durable Object (see its README)
+
+apps/extension/
 manifest.json            Extension manifest (copied into dist/)
 capann.config.json       Build edition for this branch (free | premium)
 icons/                   Toolbar icons (scripts/gen-icons.js regenerates them)
@@ -150,10 +184,10 @@ src/offscreen/           Offscreen recorder: composition, audio mixing, local We
 src/permissions/         One-time camera/microphone grant page
 src/sidepanel/           Side panel: Screenshot style (every build), Links (Premium)
 src/shared/
-  types.ts                 Annotation types and every message contract
+  types.ts                 Annotation types and the extension's message contracts
   features.ts              Edition gate (PREMIUM_ENABLED), API and site URLs
   screenshot-style.ts      Screenshot frame style, shared by the page and side panel
-  premium/                 Backend API client and chrome.storage.local state
+  premium/store.ts         Premium session, preferences, and link history (chrome.storage.local)
 scripts/build.mjs        esbuild bundler -> dist/ (reads the edition, writes the manifest)
 ```
 
