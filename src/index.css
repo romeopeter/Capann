@@ -14,8 +14,15 @@
  * - `--color-ink: #141417` / `--color-browser: #0F0F12` / `--color-body: #B8B8C0`
  *   / `--color-draw-hover: #C4B0FC` / `--color-save-ink: #0A2E1B` come from the
  *   landing mock, not the token doc.
+ * - `--color-error: #FCA5A5` (soft red for errors) comes from the Capann
+ *   Premium website brief (/verify, /view-my-links, /upgraded), not the token doc.
  * - Toolbar icon boxes render at 34px tall in the landing mock; the token doc
  *   only fixes panel width (216px), padding (14px) and swatch size (18px).
+ * - The playground shell is deliberately light: its page base is the brand mint
+ *   (`--color-accent-mint` / #86EFAC). Mint is the only green in the shell;
+ *   cards use the warm paper surface, and text/borders/controls use ink or
+ *   neutral greys (`pg-*`). It is scoped to `/playground` and is not used by the
+ *   landing page or the sample pages inside the frame.
  */
 
 @theme {
@@ -37,6 +44,7 @@
   --color-accent-mint: #86efac;
   --color-accent-cream: #f5e8a6;
   --color-save-ink: #0a2e1b; /* Save-button text on mint */
+  --color-error: #fca5a5; /* Premium pages: errors (flagged above) */
 
   /* ---- Text (token doc: Text) ---- */
   --color-text-primary: #f5f5f7;
@@ -58,6 +66,18 @@
   --color-rec: var(--color-accent-mint);
   --color-hl: var(--color-accent-cream);
 
+  /* ---- Playground shell (mint page, paper + ink UI) ----
+   * Mint is reserved for the page background. Cards are warm paper, text and
+   * borders are neutral ink, and controls use the site's dark ink style. */
+  --color-pg-bg: #86efac;
+  --color-pg-surface: #f6f5f2;
+  --color-pg-surface-tint: #e9e7e2;
+  --color-pg-ink: var(--color-ink);
+  --color-pg-body: #33333a;
+  --color-pg-muted: #55555e;
+  --color-pg-line: rgba(20, 20, 23, 0.14);
+  --color-pg-line-strong: rgba(20, 20, 23, 0.28);
+
   /* ---- Radius (token doc: Radius) ---- */
   --radius-panel: 28px;
   --radius-icon: 12px;
@@ -69,6 +89,30 @@
   --ease-morph: cubic-bezier(0.2, 0.8, 0.2, 1);
   --dur-morph: 180ms;
   --stagger-row: 50ms;
+
+  /* Playground step transition: fade + slight rise. */
+  --animate-pg-step-in: pg-step-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-pg-fade-in: pg-fade-in 280ms ease-out;
+
+  @keyframes pg-step-in {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes pg-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
 
   /* ---- Typography (token doc: Typography) ----
    * Doc suggests Inter/Manrope/Sora, 400 body + 500 labels, 13px base.
@@ -86,20 +130,40 @@
   --swatch-size: 18px;
 }
 
-html {
-  scroll-behavior: smooth;
-}
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
 
-body {
-  background: var(--color-ink);
-  color: var(--color-paper);
-  font-family: var(--font-sans);
-  font-weight: 300;
-  overflow-x: clip;
-}
+  body {
+    background: var(--color-ink);
+    color: var(--color-paper);
+    font-family: var(--font-sans);
+    font-weight: 300;
+    overflow-x: clip;
+  }
 
-::selection {
-  background: rgba(167, 139, 250, 0.32);
+  a,
+  button:not(:disabled),
+  [role="button"],
+  [role="tab"],
+  summary,
+  label,
+  select,
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"],
+  input[type="file"] {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  ::selection {
+    background: rgba(167, 139, 250, 0.32);
+  }
 }
 
 /* Display type shortcut (font-display utility already exists via --font-display;
