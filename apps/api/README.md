@@ -194,8 +194,9 @@ Every request and response shape, error code, route path, and limit lives in
 `@capann/contract` (`packages/contract/src/index.ts`), which both this Worker
 and the extension import. Responses here are checked with
 `satisfies <ContractType>`, and `HttpError` accepts only an `ApiErrorCode`, so a
-change on one side breaks the other's typecheck. Change the contract first.
-The website is a separate repository and keeps its own copy of what it uses.
+change on one side breaks the others' typecheck (the extension's, and the
+website's Premium helpers in `apps/website/src/premium/`). Change the contract
+first.
 
 ## Files
 

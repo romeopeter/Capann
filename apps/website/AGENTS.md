@@ -1,4 +1,8 @@
-# AGENTS.md — capann-website
+# AGENTS.md — apps/website
+
+This is the website workspace of the Capann monorepo (`@capann/website`). The
+repository-wide rules, layout, and the shared packages are in the root
+`AGENTS.md`; this file covers the website.
 
 ## What this is
 Marketing landing page for **Capann**, a browser extension (draw, point, screenshot, screen-record on any page; one-time purchase, no subscription). Built by Duowork.
@@ -13,17 +17,21 @@ React site with the landing page (`/`), an interactive `/playground` that render
 - `assets/{svg,png,favicon}/` — copied into this repo's `public/`; re-copy from here if assets change
 
 ## Stack
-Vite 8 + React 19 (JS, no TypeScript) + Tailwind CSS v4 (`@tailwindcss/vite`) + `react-router` 7. Node 22. Lint: `oxlint`.
+Vite 8 + React 19 (JS, no TypeScript) + Tailwind CSS v4 (`@tailwindcss/vite`) + `react-router` 7. Node 22. Lint: `oxlint`. The Premium helpers in `src/premium/*.js` carry JSDoc types from `@capann/contract` and are checked by `npm run typecheck` (`tsconfig.json`); the rest of the site isn't type-checked. React must stay on the same version as the extension (see the root `AGENTS.md`).
 
 ## Commands
-- `npm run dev` — local dev server
-- `npm run build` — production build to `dist/` (always verify changes with this). `postbuild` copies `dist/index.html` to `dist/404.html` so deep links like `/playground` work on static hosting.
-- `npm run preview` — serve `dist/` locally
-- `npm run lint` — oxlint
-- `npm run deploy` — build + publish `dist/` to `gh-pages` branch (`predeploy` runs the build)
+Install once at the repository root (`npm install`). From the root:
+- `npm run website:dev` — local dev server
+- `npm run website:build` — production build to `apps/website/dist/` (always verify changes with this). `postbuild` copies `dist/index.html` to `dist/404.html` so deep links like `/playground` work on static hosting.
+- `npm run website:preview` — serve `dist/` locally
+- `npm run website:lint` — oxlint
+- `npm run typecheck` — every workspace, including this site's Premium helpers
+- `npm run website:deploy` — build + publish `dist/` to the `gh-pages` branch of `romeopeter/capann-website` (`predeploy` runs the build)
+
+The same scripts without the `website:` prefix work from inside `apps/website`.
 
 ## Deployment
-Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-website`).
+Deployed at `https://capann.duowork.tech`. The source now lives in the Capann monorepo; the old `romeopeter/capann-website` repository is kept as the deploy target, because GitHub Pages and the custom domain are configured there. `deploy` passes `--repo` explicitly: without it, `gh-pages` would publish to the monorepo's own `gh-pages` branch.
 - `vite.config.js` sets `base: '/'` for the custom domain. If the site moves back under GitHub Project Pages, update `base` to `/capann-website/` and the deploy target together.
 - `postbuild` writes `dist/404.html` as an SPA fallback so deep links like `/playground` and `/privacy` boot the router on static hosting.
 - After `npm run deploy`, Pages must serve from the `gh-pages` branch (one-time repo-settings step).
@@ -52,14 +60,15 @@ Deployed at `https://capann.duowork.tech` (remote `origin`: `romeopeter/capann-w
 - Brand icon in use: `svg/capann-icon-light.svg` ("light" = for dark backgrounds, per assets README).
 
 ## Capann Premium pages
-Sign-in and link recovery for the Premium extension. The extension (Capann repo, `src/background/premium.ts`) and the Cloudflare Worker (`backend/`) own the contracts — don't change them from here. No accounts or passwords: a user is an email proven by magic links.
+Sign-in and link recovery for the Premium extension. Everything these pages exchange with the API and the extension is defined in `@capann/contract` (`packages/contract`): change it there, never by hand here, and the API, extension, and this site's helpers are all type-checked against it. No accounts or passwords: a user is an email proven by magic links.
 - `src/pages/VerifyPage.jsx` — `/verify?token=…` (single-use, 15-min login token). Pings each extension ID (`capann-ping`) on load; exchanges the token (`POST /api/auth/verify`) **only on click**, because email scanners open links. Hands the 30-day session token to the extension (`capann-session`), and keeps it in memory so a failed hand-off can be retried without spending the link again. Never stores tokens.
 - `src/pages/ViewMyLinksPage.jsx` — `/view-my-links?token=…` (reusable 15-min links token). `GET /api/links/list` with `Authorization: Bearer`; countdowns run on server time (skew from the response's `now`), re-rendered every 30s and on tab focus; under 24h is highlighted in cream.
 - `src/pages/UpgradedPage.jsx` — `/upgraded`, the Bachs post-checkout redirect. Sends `capann-refresh`, retrying briefly because the webhook can lag.
-- `src/premium/` — `config.js` (env), `api.js` (`callApi` + `ApiError`; the server's `error.message` is user-safe), `extension.js` (`sendToExtension`, `findExtension`), `usePrivatePage.js` (`noindex` + `referrer: no-referrer` while mounted, restored on leave), `PremiumLayout.jsx` (glass header, card, `Notice`, live `StatusLine`, button classes). Errors use `role="alert"`, progress `role="status"`; `--color-error` (#FCA5A5) is the flagged addition in `index.css`.
+- API calls go through `@capann/api-client` (`exchangeLoginToken`, `listLinks`, `ApiError`; the server's `error.message` is user-safe) with `API_URL` from `config.js`. Routes for `/verify` and `/view-my-links` come from the contract's `WEBSITE_PATHS`, which the API uses to build the emailed links.
+- `src/premium/` — `config.js` (env), `extension.js` (`findExtension`, `handOffSession`, `refreshExtension`, and the underlying `sendToExtension`; pages never build messages themselves, so every message and reply is checked here), `chrome.d.ts` (the `chrome.runtime` slice a page gets), `usePrivatePage.js` (`noindex` + `referrer: no-referrer` while mounted, restored on leave), `PremiumLayout.jsx` (glass header, card, `Notice`, live `StatusLine`, button classes). Errors use `role="alert"`, progress `role="status"`; `--color-error` (#FCA5A5) is the flagged addition in `index.css`.
 - Origin is strict: the extension accepts messages only from its exact site origin (`https://capann.duowork.tech`, or `http://localhost:5173` in a local build). Never serve these pages from `www` or another host. `vite.config.js` pins the dev server to port 5173 (`strictPort`) for the same reason.
 - Env (Vite, all public): `VITE_CAPANN_API_URL`, `VITE_CAPANN_EXTENSION_IDS` (comma-separated; Web Store ID first, then any unpacked IDs), `VITE_CAPANN_INSTALL_URL` (falls back to `/#pricing`). They live in local, gitignored `.env.development` / `.env.production` (dev: `VITE_CAPANN_API_URL=http://127.0.0.1:8799` plus your unpacked ID; prod: the production API, the Web Store ID and listing URL). Without them the API defaults to production and no extension is found, so `/verify` always asks the visitor to install Capann.
-- Local end-to-end: in the Capann repo, `cd backend && npx wrangler dev --port 8799` (magic links print to its output with `EMAIL_TRANSPORT=console`), build the extension with `node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173`, load `dist/` unpacked, put its ID in `.env.development`, then `npm run dev` here.
+- Local end-to-end, from the repository root: `npm run api:dev -- --port 8799` (magic links print to `apps/api/.wrangler-dev.log` with `EMAIL_TRANSPORT=console`), `npm run build:backend` (the extension, pointed at the local API and this site), load `apps/extension/dist` unpacked, put its ID in `.env.development.local` (or `VITE_CAPANN_EXTENSION_IDS=<id> npm run website:dev`), then `npm run website:dev`.
 
 ## Git
-`main` branch. Keep commits scoped (landing build / theme / deploy were separate commits). `node_modules/` and `dist/` are gitignored — never commit them.
+Part of the Capann monorepo: work on its `dev` branch like the other apps. This site's history up to the import is preserved there (imported with `git subtree`). Keep commits scoped. `node_modules/` and `dist/` are gitignored — never commit them.

@@ -177,14 +177,17 @@ against the real Worker: sign-in, the payment gate, single and multipart uploads
 (byte-for-byte), part retries and abort, the link list, the rate limit, and
 cancellation.
 
-The UI needs a browser. Build against the local backend and website:
+The UI needs a browser. Run the API, build the extension against it, load
+`apps/extension/dist` unpacked, and run the website with that build's ID:
 
 ```bash
+npm run api:dev -- --port 8799
 npm run build:backend   # premium, pointed at 127.0.0.1:8799 and localhost:5173
+VITE_CAPANN_EXTENSION_IDS=<unpacked id> npm run website:dev
 ```
 
-Then check by hand: sign in (the link is printed in `.wrangler-dev.log`; until
-the website exists, exchange it with `POST /api/auth/verify` and send the
-session from a page on `siteUrl`), upgrade (simulate the webhook as in
-`apps/api/scripts/e2e.mjs`), record and stop, answer the dialog, and open
-**My links**.
+Then check by hand: sign in from the Record view (the link is printed in
+`apps/api/.wrangler-dev.log`), open it and press **Continue to Capann** on
+`/verify`, upgrade (simulate the webhook as in `apps/api/scripts/e2e.mjs`, then
+open `/upgraded`), record and stop, answer the dialog, open **My links**, and
+use "Lost a link?" to reach `/view-my-links`.

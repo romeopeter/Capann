@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // The site is JavaScript. Its Premium helpers (the hand-off to the extension
+  // and the env config) are type-checked against @capann/contract via JSDoc;
+  // API calls go through @capann/api-client, which is TypeScript. Pages build
+  // no messages themselves, so the rest of the site isn't checked.
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": true,
+    "jsx": "react-jsx",
+    "strict": false,
+    "noUncheckedIndexedAccess": false,
+    "types": ["vite/client"]
+  },
+  "include": ["src/premium/*.js", "src/premium/*.d.ts"]
+}

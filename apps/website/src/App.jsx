@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router'
+import { WEBSITE_PATHS } from '@capann/contract'
 import LandingPage from './pages/LandingPage.jsx'
 import PlaygroundPage from './pages/PlaygroundPage.jsx'
 import PrivacyPage from './pages/PrivacyPage.jsx'
@@ -30,9 +31,10 @@ export default function App() {
         <Route path="/playground" element={<PlaygroundPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         
-        {/* Capann Premium: emailed sign-in and link-recovery pages, post-checkout. */}
-        <Route path="/verify" element={<VerifyPage />} />
-        <Route path="/view-my-links" element={<ViewMyLinksPage />} />
+        {/* Capann Premium: emailed sign-in and link-recovery pages (paths shared
+            with the API, which emails them), and the post-checkout page. */}
+        <Route path={WEBSITE_PATHS.login} element={<VerifyPage />} />
+        <Route path={WEBSITE_PATHS.links} element={<ViewMyLinksPage />} />
         <Route path="/upgraded" element={<UpgradedPage />} />
         <Route path="*" element={<LandingPage />} />
       </Routes>

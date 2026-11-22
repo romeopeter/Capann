@@ -2,7 +2,7 @@
 
 This handbook explains how Capann is put together and how to make changes that fit its existing design and behavior. Capann runs as an in-page overlay: its launcher, annotation toolbar, and recording setup appear over the active website, while Chrome's action icon reports recording status. Premium cloud links are served by a separate Cloudflare Worker in `apps/api/`.
 
-Capann is an npm-workspaces monorepo: `apps/extension/` (the extension), `apps/api/` (the Premium Worker), and `packages/` for what they share. Unless a path says otherwise, `src/…` and `scripts/…` paths in these notes are relative to `apps/extension/`.
+Capann is an npm-workspaces monorepo: `apps/extension/` (the extension), `apps/api/` (the Premium Worker), `apps/website/` (the website and its Premium pages), and `packages/` for what they share. Unless a path says otherwise, `src/…` and `scripts/…` paths in these notes are relative to `apps/extension/`.
 
 ## Start here
 

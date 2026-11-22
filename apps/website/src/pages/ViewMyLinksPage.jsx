@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { ArrowClockwise, ArrowSquareOut, Check, Copy, LinkSimple, Timer } from '@phosphor-icons/react'
-import { ApiError, callApi } from '../premium/api.js'
+import { ApiError, listLinks } from '@capann/api-client'
+import { RETENTION_DAYS } from '@capann/contract'
+import { API_URL } from '../premium/config.js'
 import { usePrivatePage } from '../premium/usePrivatePage.js'
 import { Card, Notice, PageHeading, PremiumLayout, SECONDARY_BUTTON, StatusLine } from '../premium/PremiumLayout.jsx'
 
@@ -41,7 +43,7 @@ function formatRemaining(ms) {
 
 function retentionDays(seconds) {
   const days = Math.round((Number(seconds) || 0) / 86_400)
-  return days > 0 ? days : 7
+  return days > 0 ? days : RETENTION_DAYS
 }
 
 async function copyText(text) {
@@ -210,7 +212,7 @@ export default function ViewMyLinksPage() {
   useEffect(() => {
     if (!token) return undefined
     const controller = new AbortController()
-    callApi('/api/links/list', { token, signal: controller.signal }).then(
+    listLinks(API_URL, token, { signal: controller.signal }).then(
       (data) => {
         // Run countdowns on server time: skew = server clock − this clock.
         const serverNow = Date.parse(data.now)
@@ -260,7 +262,7 @@ export default function ViewMyLinksPage() {
 
   const ready = state.status === 'ready'
   const items = ready && Array.isArray(state.data.items) ? state.data.items : []
-  const days = ready ? retentionDays(state.data.retentionSeconds) : 7
+  const days = ready ? retentionDays(state.data.retentionSeconds) : RETENTION_DAYS
 
   return (
     <PremiumLayout wide>
