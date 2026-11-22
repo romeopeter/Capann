@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+/*
+ * Capann design tokens → Tailwind v4 theme.
+ * Source: `/Users/romeo/Desktop/Capann website/uploads/design-tokens.md`
+ * (annotation-extension toolbar system) + landing page (`Capann Landing.dc.html`)
+ * + brand sheet (`Capann Brand Sheet.dc.html`).
+ *
+ * Naming: canonical token names are exposed verbatim (e.g. `bg-surface-base`,
+ * `rounded-panel`, `ease-morph`) AND short landing aliases are kept so existing
+ * classes (`bg-panel`, `text-draw`, `bg-ink`, …) keep working.
+ *
+ * Flagged deviations from the token doc (per its "don't silently adjust" rule):
+ * - `--color-ink: #141417` / `--color-browser: #0F0F12` / `--color-body: #B8B8C0`
+ *   / `--color-draw-hover: #C4B0FC` / `--color-save-ink: #0A2E1B` come from the
+ *   landing mock, not the token doc.
+ * - `--color-error: #FCA5A5` (soft red for errors) comes from the Capann
+ *   Premium website brief (/verify, /view-my-links, /upgraded), not the token doc.
+ * - Toolbar icon boxes render at 34px tall in the landing mock; the token doc
+ *   only fixes panel width (216px), padding (14px) and swatch size (18px).
+ * - The playground shell is deliberately light: its page base is the brand mint
+ *   (`--color-accent-mint` / #86EFAC). Mint is the only green in the shell;
+ *   cards use the warm paper surface, and text/borders/controls use ink or
+ *   neutral greys (`pg-*`). It is scoped to `/playground` and is not used by the
+ *   landing page or the sample pages inside the frame.
+ */
+
+@theme {
+  /* ---- Surfaces (token doc: Surfaces) ---- */
+  --color-surface-base: #1c1c20;
+  --color-surface-elevated: #26262b;
+  --color-surface-translucent: rgba(28, 28, 32, 0.72);
+  --color-surface-base-dim: rgba(28, 28, 32, 0.85); /* collapsed 56px circle fill */
+
+  /* ---- Borders (token doc: Borders) ---- */
+  --color-border-hairline: rgba(255, 255, 255, 0.08);
+  --color-border-hairline-strong: rgba(255, 255, 255, 0.15);
+  --color-track: rgba(255, 255, 255, 0.12); /* size-slider track */
+
+  /* ---- Accents (token doc: Accent colors) ---- */
+  --color-accent-violet: #a78bfa;
+  --color-accent-violet-soft: rgba(167, 139, 250, 0.18); /* active-tool fill */
+  --color-accent-violet-hover: #c4b0fc; /* landing-derived hover */
+  --color-accent-mint: #86efac;
+  --color-accent-cream: #f5e8a6;
+  --color-save-ink: #0a2e1b; /* Save-button text on mint */
+  --color-error: #fca5a5; /* Premium pages: errors (flagged above) */
+
+  /* ---- Text (token doc: Text) ---- */
+  --color-text-primary: #f5f5f7;
+  --color-text-muted: #8b8b93;
+  --color-text-body: #b8b8c0; /* landing-derived body copy */
+
+  /* ---- Page chrome (landing-derived, not in token doc) ---- */
+  --color-ink: #141417;
+  --color-browser: #0f0f12;
+
+  /* ---- Landing aliases (keep existing classes working) ---- */
+  --color-panel: var(--color-surface-base);
+  --color-elevated: var(--color-surface-elevated);
+  --color-paper: var(--color-text-primary);
+  --color-body: var(--color-text-body);
+  --color-muted: var(--color-text-muted);
+  --color-draw: var(--color-accent-violet);
+  --color-draw-hover: var(--color-accent-violet-hover);
+  --color-rec: var(--color-accent-mint);
+  --color-hl: var(--color-accent-cream);
+
+  /* ---- Playground shell (mint page, paper + ink UI) ----
+   * Mint is reserved for the page background. Cards are warm paper, text and
+   * borders are neutral ink, and controls use the site's dark ink style. */
+  --color-pg-bg: #86efac;
+  --color-pg-surface: #f6f5f2;
+  --color-pg-surface-tint: #e9e7e2;
+  --color-pg-ink: var(--color-ink);
+  --color-pg-body: #33333a;
+  --color-pg-muted: #55555e;
+  --color-pg-line: rgba(20, 20, 23, 0.14);
+  --color-pg-line-strong: rgba(20, 20, 23, 0.28);
+
+  /* ---- Radius (token doc: Radius) ---- */
+  --radius-panel: 28px;
+  --radius-icon: 12px;
+  --radius-pill: 999px;
+
+  /* ---- Motion (token doc: Motion) ----
+   * `--ease-morph` maps to the `ease-morph` utility. Durations/delays are
+   * exposed as vars plus explicit utilities below. */
+  --ease-morph: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-morph: 180ms;
+  --stagger-row: 50ms;
+
+  /* Playground step transition: fade + slight rise. */
+  --animate-pg-step-in: pg-step-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-pg-fade-in: pg-fade-in 280ms ease-out;
+
+  @keyframes pg-step-in {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes pg-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* ---- Typography (token doc: Typography) ----
+   * Doc suggests Inter/Manrope/Sora, 400 body + 500 labels, 13px base.
+   * Landing uses Sora + Big Shoulders Display for display type. */
+  --font-sans: "Sora", system-ui, sans-serif;
+  --font-display: "Big Shoulders Display", sans-serif;
+
+  /* ---- Translucency (token doc: Translucency) ---- */
+  --blur-panel: 20px;
+
+  /* ---- Toolbar geometry (token doc: States) ---- */
+  --toolbar-collapsed: 56px;
+  --toolbar-expanded: 216px;
+  --toolbar-padding: 14px;
+  --swatch-size: 18px;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--color-ink);
+    color: var(--color-paper);
+    font-family: var(--font-sans);
+    font-weight: 300;
+    overflow-x: clip;
+  }
+
+  a,
+  button:not(:disabled),
+  [role="button"],
+  [role="tab"],
+  summary,
+  label,
+  select,
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"],
+  input[type="file"] {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  ::selection {
+    background: rgba(167, 139, 250, 0.32);
+  }
+}
+
+/* Display type shortcut (font-display utility already exists via --font-display;
+ * this keeps the raw class working even without the utility pass). */
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Frosted-glass panel: background + blur(20px) + hairline border. */
+.glass {
+  background: var(--color-surface-translucent);
+  border: 1px solid var(--color-border-hairline);
+  backdrop-filter: blur(var(--blur-panel));
+  -webkit-backdrop-filter: blur(var(--blur-panel));
+}
+
+/* Active tool: violet fill at 18% + violet icon. */
+.tool-active {
+  background: var(--color-accent-violet-soft);
+  color: var(--color-accent-violet);
+}
+
+/* Motion utilities (durations/delays have no Tailwind theme namespace). */
+.duration-morph {
+  transition-duration: var(--dur-morph);
+}
+.ease-morph {
+  transition-timing-function: var(--ease-morph);
+}
+.delay-stagger-row {
+  transition-delay: var(--stagger-row);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

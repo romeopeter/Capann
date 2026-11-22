@@ -1,0 +1,12 @@
+# Capann
+
+> Browser extension for visual annotation and screen recording. Annotate any webpage free; upgrade once to record, download and share.
+
+- **Product:** Capann — draw, highlight, arrows, shapes, text callouts, laser pointer, spotlight, eraser, persistent per-tab annotations, PNG screenshot export (all free); Pro adds screen/camera recording, local video downloads, shareable links.
+- **Pricing:** Free ($0) for annotation. Pro is $10 one-time for permanent access — no subscription, no renewal.
+- **Sharing:** Shareable recording links expire after seven days. Downloaded video files never expire. Recipients watch without installing Capann or creating an account.
+- **Annotations** float above the webpage and never permanently modify the underlying page.
+- **Browsers:** Chromium-based — Chrome, Edge, Brave.
+- **Maker:** [Duowork](https://duowork.tech) — "We build engines around how people and businesses work."
+- **Site:** [https://romeopeter.github.io/capann-website/](https://romeopeter.github.io/capann-website/)
+- **Shortcuts:** Alt+Shift+S toggle draw mode · Alt+Shift+T next tool · Alt+Shift+C clear · Esc exit draw mode

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 216" width="560" height="216" fill="none">
+  <g stroke="#F6F5F2" stroke-width="2.5">
+    <path d="M1.25 35.25 L1.25 1.25 L35.25 1.25"></path>
+    <path d="M524.75 1.25 L558.75 1.25 L558.75 35.25"></path>
+    <path d="M1.25 180.75 L1.25 214.75 L35.25 214.75"></path>
+    <path d="M524.75 214.75 L558.75 214.75 L558.75 180.75"></path>
+  </g>
+  <g transform="translate(72 148)"><text x="0" y="0" font-family="Big Shoulders Display, sans-serif" font-weight="700" font-size="108" letter-spacing="3.24" fill="#F6F5F2">CAPA<tspan fill="#A78BFA">NN</tspan></text></g>
+</svg>
