@@ -1,0 +1,16 @@
+{
+  "name": "@capann/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "fetch-based client for Capann's API (sign-in, session, checkout, links). Used by the extension; usable by the website.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@capann/contract": "*"
+  }
+}

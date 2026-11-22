@@ -1,0 +1,8 @@
+# Copy to .dev.vars for `npm run dev`. Never commit .dev.vars.
+JWT_SECRET="local-dev-only-replace-with-32-plus-random-bytes"
+RESEND_API_KEY=""
+BACHS_WEBHOOK_SECRET="local-dev-webhook-secret"
+# Log magic links to the terminal instead of emailing them.
+EMAIL_TRANSPORT="console"
+SITE_URL="http://localhost:5173"
+ALLOWED_ORIGINS="http://localhost:5173"

@@ -1,0 +1,32 @@
+{
+  "name": "@capann/extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capann — pencil, arrow pointer, highlighter, shapes, text and laser/spotlight annotation overlay for screen-sharing.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "build:free": "npm run typecheck && node scripts/build.mjs --edition=free",
+    "build:premium": "npm run typecheck && node scripts/build.mjs --edition=premium",
+    "watch": "node scripts/build.mjs --watch",
+    "watch:free": "node scripts/build.mjs --watch --edition=free",
+    "watch:premium": "node scripts/build.mjs --watch --edition=premium",
+    "build:backend": "node scripts/build.mjs --edition=premium --api-url=http://127.0.0.1:8799 --site-url=http://localhost:5173",
+    "test:wiring": "node scripts/record-wiring-test.mjs",
+    "test:premium": "node scripts/premium-e2e.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@capann/api-client": "*",
+    "@capann/contract": "*",
+    "@phosphor-icons/react": "^2.1.10",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}

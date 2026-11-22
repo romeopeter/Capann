@@ -1,0 +1,15 @@
+{
+  // Shared by every workspace. Each app or package extends it and adds only
+  // its runtime: DOM + chrome (extension), Workers (api), or nothing (contract).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  }
+}

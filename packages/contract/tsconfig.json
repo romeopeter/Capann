@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // No DOM, chrome, or Workers types: the contract must stay importable from
+  // the browser, the extension, and the Worker alike.
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src"]
+}
