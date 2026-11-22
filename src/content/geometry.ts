@@ -22,6 +22,7 @@ import {
   textStrokeForFont,
   triangleContains,
 } from "./text-bubble";
+import { FREE_TEXT, freeTextLayout, resizeFreeText } from "./free-text";
 
 export interface Bounds {
   left: number;
@@ -89,9 +90,12 @@ export function moveCommentTip(ann: TextAnnotation, tip: Point): TextAnnotation 
   };
 }
 
-/** Text bubbles keep their tail anchored to the page, so they don't rotate. */
+/**
+ * Text bubbles keep their tail anchored to the page, so they don't rotate.
+ * Free text stays upright too, so it always reads as typed.
+ */
 export function isRotatable(ann: AnnotationObject): boolean {
-  return ann.type !== "text";
+  return ann.type !== "text" && ann.type !== "freetext";
 }
 
 /** Page position of the rotate handle, or null for non-rotatable objects. */
@@ -162,6 +166,10 @@ export function annotationBounds(ann: AnnotationObject): Bounds {
   if (ann.type === "text") {
     return textBubbleLayout(ann).body;
   }
+  if (ann.type === "freetext") {
+    const { left, top, right, bottom } = freeTextLayout(ann);
+    return { left, top, right, bottom };
+  }
   if (!("points" in ann)) return { left: 0, top: 0, right: 0, bottom: 0 };
   const xs = ann.points.map((p) => p.x),
     ys = ann.points.map((p) => p.y);
@@ -171,6 +179,11 @@ export function annotationBounds(ann: AnnotationObject): Bounds {
     right: Math.max(...xs),
     bottom: Math.max(...ys),
   };
+}
+
+/** Whether two bounds overlap (touching counts). */
+export function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
 }
 
 export function shapeContains(
@@ -430,6 +443,7 @@ export function resizeAnnotation(
     return resizeShape(ann, handle, point);
   if (ann.type === "arrow") return resizeArrow(ann, handle, point);
   if (ann.type === "text") return resizeText(ann, handle, point);
+  if (ann.type === "freetext") return resizeFreeText(ann, handle, point);
   return ann;
 }
 
@@ -446,6 +460,7 @@ export function translateAnnotation(
       position: move(ann.position),
       ...(ann.bubble ? { bubble: move(ann.bubble) } : null),
     };
+  if (ann.type === "freetext") return { ...ann, position: move(ann.position) };
   if (
     ann.type === "arrow" ||
     ann.type === "rectangle" ||
@@ -549,6 +564,16 @@ export function hitTest(point: Point, ann: AnnotationObject): boolean {
             layout.tail.baseRight,
           )
         : false;
+    }
+    case "freetext": {
+      const b = freeTextLayout(ann);
+      const padding = FREE_TEXT.hitPadding;
+      return (
+        point.x >= b.left - padding &&
+        point.x <= b.right + padding &&
+        point.y >= b.top - padding &&
+        point.y <= b.bottom + padding
+      );
     }
     default:
       return false;

@@ -47,6 +47,12 @@ const HEADER_BUTTON: React.CSSProperties = {
 export interface CapannShellProps {
   title: string;
   subtitle?: string;
+  /**
+   * Accessible name of the panel. Defaults to the title; set it when the
+   * title changes often (Mark screen shows the active tool's name), so the
+   * region keeps one stable name.
+   */
+  label?: string;
   /** Back returns to the chooser. Hidden while recording. */
   showBack: boolean;
   onBack: () => void;
@@ -75,6 +81,7 @@ interface DragState {
 export function CapannShell({
   title,
   subtitle,
+  label,
   showBack,
   onBack,
   onClose,
@@ -130,7 +137,7 @@ export function CapannShell({
   return (
     <section
       ref={panelRef}
-      aria-label={`Capann ${title}`}
+      aria-label={`Capann ${label ?? title}`}
       style={{
         position: "fixed",
         top: position ? position.top : "48px",
@@ -223,6 +230,7 @@ export function CapannShell({
         {/***
          * Title, optional subtitle, and mode-specific header actions (e.g.Annotate undo/redo).
          */}
+        <div style={{ width: "100%" }}>
         <div
           style={{
             display: "flex",
@@ -233,17 +241,33 @@ export function CapannShell({
             width: "100%",
           }}
         >
-          <div style={{ flex: 1, minWidth: 0, pointerEvents: "none" }}>
+          <div
+            aria-live="polite"
+            style={{ flex: 1, minWidth: 0, pointerEvents: "none" }}
+          >
             {title.toLowerCase() !== "capann" && (
               <strong style={{ fontSize: 15 }}>{title}</strong>
-            )}
-
-            {subtitle && (
-              <div style={{ color: "#8B8B93", fontSize: 11 }}>{subtitle}</div>
             )}
           </div>
 
           {actions}
+        </div>
+        {/* Full width under the title row, so a caption isn't squeezed by the
+            header actions and wraps less as Mark screen switches tools. */}
+        {subtitle && (
+          <div
+            aria-live="polite"
+            style={{
+              width: "100%",
+              marginTop: 1,
+              color: "#8B8B93",
+              fontSize: 11,
+              pointerEvents: "none",
+            }}
+          >
+            {subtitle}
+          </div>
+        )}
         </div>
       </header>
 

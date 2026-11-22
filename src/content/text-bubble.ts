@@ -8,6 +8,7 @@
  */
 
 import type { Point, TextAnnotation } from "../shared/types";
+import { activeImageSpace } from "./page-space";
 
 export const TEXT_BUBBLE = {
   defaultWidth: 280,
@@ -220,6 +221,9 @@ export function wrapBubbleText(
  */
 export function pageViewport(): BubbleViewport {
   if (typeof window === "undefined") return { width: 1024, height: Infinity };
+  // On a screenshot, bubbles stay inside the image.
+  const image = activeImageSpace();
+  if (image) return { width: image.width, height: image.height };
   return {
     width: Math.max(
       window.innerWidth || 1024,
@@ -232,6 +236,8 @@ export function pageViewport(): BubbleViewport {
 /** The part of the page currently on screen, in page coordinates. */
 export function visibleViewport(): BubbleViewport {
   if (typeof window === "undefined") return { width: 1024, height: 768 };
+  const image = activeImageSpace();
+  if (image) return { width: image.width, height: image.height };
   return {
     left: window.scrollX,
     top: window.scrollY,

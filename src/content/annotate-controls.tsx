@@ -9,21 +9,43 @@
  */
 
 import { useRef } from "react";
-import { ChatCircleIcon, PaletteIcon } from "@phosphor-icons/react";
-import type { ArrowHeadStyle, ToolId } from "../shared/types";
+import type { CSSProperties, ReactNode } from "react";
+import {
+  ChatCircleIcon,
+  MagnifyingGlassPlusIcon,
+  PaletteIcon,
+  SelectionPlusIcon,
+  TextTIcon,
+} from "@phosphor-icons/react";
+import type { ArrowHeadStyle, TextFont, ToolId } from "../shared/types";
 import { TOOL_LABELS } from "../shared/types";
 import { TOOL_ICONS } from "./icons";
 import { SHELL_BUTTON } from "./shell";
+import { TEXT_FONTS } from "./free-text";
+import { LENS_RADII, ZOOM_LEVELS } from "./zoom-lens";
+import type { LensSize, ZoomLevel } from "./zoom-lens";
 
+// Two rows on a seven-column grid. Text (free writing) ends the first row and
+// Comment starts the second, so the two text tools sit next to each other;
+// Screenshot ends the second row.
 const MAIN_TOOLS: ToolId[] = [
   "pencil",
   "highlighter",
   "arrow",
   "rectangle",
   "ellipse",
-  "text",
+  "write",
 ];
-const EXTRA_TOOLS: ToolId[] = ["select", "laser", "spotlight", "eraser"];
+const EXTRA_TOOLS: ToolId[] = [
+  "text",
+  "select",
+  "laser",
+  "spotlight",
+  "zoom",
+  "eraser",
+  "screenshot",
+];
+const GRID_COLUMNS = 7;
 
 const CORE_COLORS = ["#EF4444", "#0A0A0C", "#FACC15", "#22C55E", "#FFFFFF"];
 
@@ -184,6 +206,11 @@ function ToolIcon({ tool, active }: { tool: ToolId; active: boolean }) {
   const color = active ? "#A78BFA" : "#8B8B93";
   if (tool === "text")
     return <ChatCircleIcon size={16} weight="bold" color={color} />;
+  if (tool === "write") return <TextTIcon size={16} weight="bold" color={color} />;
+  if (tool === "zoom")
+    return <MagnifyingGlassPlusIcon size={16} weight="bold" color={color} />;
+  if (tool === "screenshot")
+    return <SelectionPlusIcon size={16} weight="bold" color={color} />;
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
       <path
@@ -194,6 +221,56 @@ function ToolIcon({ tool, active }: { tool: ToolId; active: boolean }) {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+/**
+ * One tool in the grid. Hovering or focusing it previews its name and caption
+ * in the panel header (`onPreview`), so a tool can be learned without being
+ * picked; leaving clears the preview. The label is `aria-label` rather than a
+ * `title` tooltip, which would only repeat the header.
+ */
+function ToolButton({
+  tool,
+  active,
+  onSelect,
+  onPreview,
+}: {
+  tool: ToolId;
+  active: boolean;
+  onSelect: (tool: ToolId) => void;
+  onPreview?: (tool: ToolId | null) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(tool)}
+      aria-label={TOOL_LABELS[tool]}
+      aria-pressed={active}
+      style={{
+        height: "30px",
+        borderRadius: "12px",
+        border: "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        background: active ? "rgba(167,139,250,0.18)" : "transparent",
+      }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = "#26262B";
+        onPreview?.(tool);
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = "transparent";
+        onPreview?.(null);
+      }}
+      onFocus={(e) => {
+        if (e.currentTarget.matches(":focus-visible")) onPreview?.(tool);
+      }}
+      onBlur={() => onPreview?.(null)}
+    >
+      <ToolIcon tool={tool} active={active} />
+    </button>
   );
 }
 
@@ -219,6 +296,138 @@ export interface AnnotateControlsProps {
   currentHeadStyle: ArrowHeadStyle;
   currentFilled: boolean;
   statusText?: string;
+  /** Free text font; the row shows while Text is active or a text is selected. */
+  currentFont: TextFont;
+  onFontChange: (font: TextFont) => void;
+  showFontRow: boolean;
+  zoomLevel: ZoomLevel;
+  lensSize: LensSize;
+  onZoomLevelChange: (zoom: ZoomLevel) => void;
+  onLensSizeChange: (size: LensSize) => void;
+  /**
+   * "screenshot": the same tools on a frozen screenshot. Session add-ons are
+   * hidden, and the actions become Style / Copy / Save.
+   */
+  mode?: "page" | "screenshot";
+  /** Tools not offered here (e.g. live-only tools on a screenshot). */
+  hiddenTools?: ReadonlySet<ToolId>;
+  /** A tool is hovered or keyboard-focused (null when it no longer is). */
+  onToolPreview?: (tool: ToolId | null) => void;
+  onOpenStyle?: () => void;
+  onCopy?: () => void;
+  copyAvailable?: boolean;
+}
+
+const ROW_LABEL: CSSProperties = {
+  font: "500 11px/1 Manrope,system-ui,sans-serif",
+  color: "#8B8B93",
+  paddingLeft: "4px",
+};
+
+/**
+ * A labelled row of pill choices (arrow heads, fonts, zoom). Contextual rows
+ * use it so they look and behave the same.
+ */
+function OptionRow<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { id: T; label: ReactNode; title?: string; style?: CSSProperties }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "7px",
+        animation: "rowIn 140ms cubic-bezier(0.2,0.8,0.2,1) both",
+      }}
+    >
+      <span style={ROW_LABEL}>{label}</span>
+      <div role="radiogroup" aria-label={label} style={{ display: "flex", gap: "4px" }}>
+        {options.map((option) => {
+          const active = option.id === value;
+          return (
+            <button
+              key={String(option.id)}
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(option.id)}
+              title={option.title}
+              style={{
+                flex: 1,
+                height: "26px",
+                padding: 0,
+                borderRadius: "999px",
+                border: "none",
+                cursor: "pointer",
+                font: "500 11px/1 Manrope,system-ui,sans-serif",
+                background: active ? "rgba(167,139,250,0.18)" : "transparent",
+                color: active ? "#A78BFA" : "#8B8B93",
+                ...option.style,
+              }}
+              onMouseEnter={(e) => {
+                if (!active) e.currentTarget.style.background = "#26262B";
+              }}
+              onMouseLeave={(e) => {
+                if (!active) e.currentTarget.style.background = "transparent";
+              }}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const ACTION_BUTTON: CSSProperties = {
+  flex: 1,
+  height: "32px",
+  borderRadius: "999px",
+  background: "transparent",
+  border: "1px solid rgba(255,255,255,0.15)",
+  color: "#F5F5F7",
+  font: "500 13px Manrope,system-ui,sans-serif",
+  cursor: "pointer",
+};
+
+/** Ghost pill (hairline border) used for secondary actions. */
+function GhostButton({
+  children,
+  onClick,
+  disabled = false,
+  title,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        ...ACTION_BUTTON,
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? "default" : "pointer",
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = "#26262B";
+      }}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      {children}
+    </button>
+  );
 }
 
 export function AnnotateControls({
@@ -243,7 +452,25 @@ export function AnnotateControls({
   currentHeadStyle,
   currentFilled,
   statusText = "",
+  currentFont,
+  onFontChange,
+  showFontRow,
+  zoomLevel,
+  lensSize,
+  onZoomLevelChange,
+  onLensSizeChange,
+  mode = "page",
+  hiddenTools,
+  onToolPreview,
+  onOpenStyle,
+  onCopy,
+  copyAvailable = true,
 }: AnnotateControlsProps) {
+  const screenshotMode = mode === "screenshot";
+  const offered = (tools: ToolId[]) =>
+    hiddenTools ? tools.filter((tool) => !hiddenTools.has(tool)) : tools;
+  const mainTools = offered(MAIN_TOOLS);
+  const extraTools = offered(EXTRA_TOOLS);
   /** A tool only counts as active while draw mode is on. */
   const isToolActive = (t: ToolId) => drawModeEnabled && currentTool === t;
   // A color outside the swatch row came from the custom picker; the palette
@@ -266,7 +493,7 @@ export function AnnotateControls({
     }
   };
 
-  const needsSetup = !timerOn || !maskOn;
+  const needsSetup = !screenshotMode && (!timerOn || !maskOn);
 
   return (
     <div
@@ -276,81 +503,41 @@ export function AnnotateControls({
         gap: "12px",
       }}
     >
-      {/* Main tools (6-col grid) */}
+      {/* Main tools */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(6,1fr)",
+          gridTemplateColumns: `repeat(${GRID_COLUMNS},1fr)`,
           gap: "4px",
         }}
       >
-        {MAIN_TOOLS.map((tool) => (
-          <button
+        {mainTools.map((tool) => (
+          <ToolButton
             key={tool}
-            onClick={() => handleToolSelect(tool)}
-            title={TOOL_LABELS[tool]}
-            style={{
-              height: "30px",
-              borderRadius: "12px",
-              border: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              background: isToolActive(tool)
-                ? "rgba(167,139,250,0.18)"
-                : "transparent",
-            }}
-            onMouseEnter={(e) => {
-              if (!isToolActive(tool))
-                e.currentTarget.style.background = "#26262B";
-            }}
-            onMouseLeave={(e) => {
-              if (!isToolActive(tool))
-                e.currentTarget.style.background = "transparent";
-            }}
-          >
-            <ToolIcon tool={tool} active={isToolActive(tool)} />
-          </button>
+            tool={tool}
+            active={isToolActive(tool)}
+            onSelect={handleToolSelect}
+            onPreview={onToolPreview}
+          />
         ))}
       </div>
 
-      {/* Extra tools (4-col grid) */}
+      {/* Extra tools (same grid, so the two rows line up) */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(4,1fr)",
+          gridTemplateColumns: `repeat(${GRID_COLUMNS},1fr)`,
           gap: "4px",
         }}
       >
-        {EXTRA_TOOLS.map((tool) => (
-          <button
+        {extraTools.map((tool) => (
+          <ToolButton
             key={tool}
-            onClick={() => handleToolSelect(tool)}
-            title={TOOL_LABELS[tool]}
-            style={{
-              height: "30px",
-              borderRadius: "12px",
-              border: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-              background: isToolActive(tool)
-                ? "rgba(167,139,250,0.18)"
-                : "transparent",
-            }}
-            onMouseEnter={(e) => {
-              if (!isToolActive(tool))
-                e.currentTarget.style.background = "#26262B";
-            }}
-            onMouseLeave={(e) => {
-              if (!isToolActive(tool))
-                e.currentTarget.style.background = "transparent";
-            }}
-          >
-            <ToolIcon tool={tool} active={isToolActive(tool)} />
-          </button>
+            tool={tool}
+            active={isToolActive(tool)}
+            onSelect={handleToolSelect}
+            onPreview={onToolPreview}
+          />
         ))}
       </div>
 
@@ -457,57 +644,49 @@ export function AnnotateControls({
 
       {/* Arrow head style — only meaningful for the arrow tool */}
       {isToolActive("arrow") && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "7px",
-            animation: "rowIn 140ms cubic-bezier(0.2,0.8,0.2,1) both",
-          }}
-        >
-          <span
-            style={{
-              font: "500 11px/1 Manrope,system-ui,sans-serif",
-              color: "#8B8B93",
-              paddingLeft: "4px",
-            }}
-          >
-            Arrow head
-          </span>
-          <div style={{ display: "flex", gap: "4px" }}>
-            {HEAD_STYLES.map((h) => (
-              <button
-                key={h.id}
-                onClick={() => onHeadStyleChange(h.id)}
-                title={h.label}
-                style={{
-                  flex: 1,
-                  height: "26px",
-                  padding: 0,
-                  borderRadius: "999px",
-                  border: "none",
-                  cursor: "pointer",
-                  font: "500 11px/1 Manrope,system-ui,sans-serif",
-                  background:
-                    currentHeadStyle === h.id
-                      ? "rgba(167,139,250,0.18)"
-                      : "transparent",
-                  color: currentHeadStyle === h.id ? "#A78BFA" : "#8B8B93",
-                }}
-                onMouseEnter={(e) => {
-                  if (currentHeadStyle !== h.id)
-                    e.currentTarget.style.background = "#26262B";
-                }}
-                onMouseLeave={(e) => {
-                  if (currentHeadStyle !== h.id)
-                    e.currentTarget.style.background = "transparent";
-                }}
-              >
-                {h.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <OptionRow
+          label="Arrow head"
+          options={HEAD_STYLES.map((h) => ({ id: h.id, label: h.label, title: h.label }))}
+          value={currentHeadStyle}
+          onChange={onHeadStyleChange}
+        />
+      )}
+
+      {/* Font — free text only. Each choice is shown in its own typeface. */}
+      {showFontRow && (
+        <OptionRow
+          label="Font"
+          options={TEXT_FONTS.map((f) => ({
+            id: f.id,
+            label: f.label,
+            title: `${f.label} font`,
+            style: { fontFamily: f.stack, fontSize: "12px", fontWeight: f.weight },
+          }))}
+          value={currentFont}
+          onChange={onFontChange}
+        />
+      )}
+
+      {/* Zoom lens: magnification and lens size */}
+      {isToolActive("zoom") && (
+        <>
+          <OptionRow
+            label="Zoom"
+            options={ZOOM_LEVELS.map((z) => ({ id: z, label: `${z}×`, title: `${z}× magnification` }))}
+            value={zoomLevel}
+            onChange={onZoomLevelChange}
+          />
+          <OptionRow
+            label="Lens size"
+            options={(Object.keys(LENS_RADII) as LensSize[]).map((size) => ({
+              id: size,
+              label: size,
+              title: { S: "Small", M: "Medium", L: "Large" }[size],
+            }))}
+            value={lensSize}
+            onChange={onLensSizeChange}
+          />
+        </>
       )}
 
       {/* Shape fill — only meaningful for rectangle / ellipse */}
@@ -671,36 +850,33 @@ export function AnnotateControls({
           gap: "6px",
         }}
       >
-        <button
-          onClick={onClear}
-          style={{
-            flex: 1,
-            height: "32px",
-            borderRadius: "999px",
-            background: "transparent",
-            border: "1px solid rgba(255,255,255,0.15)",
-            color: "#F5F5F7",
-            font: "500 13px Manrope,system-ui,sans-serif",
-            cursor: "pointer",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "#26262B")}
-          onMouseLeave={(e) =>
-            (e.currentTarget.style.background = "transparent")
-          }
-        >
-          Clear
-        </button>
+        {screenshotMode ? (
+          <>
+            <GhostButton onClick={() => onOpenStyle?.()} title="Background, padding, corners, shadow, and border">
+              Style
+            </GhostButton>
+            <GhostButton
+              onClick={() => onCopy?.()}
+              disabled={!copyAvailable}
+              title={
+                copyAvailable
+                  ? "Copy the framed image"
+                  : "This page doesn't allow copying images. Use Save."
+              }
+            >
+              Copy
+            </GhostButton>
+          </>
+        ) : (
+          <GhostButton onClick={onClear}>Clear</GhostButton>
+        )}
         <button
           onClick={onSavePng}
           style={{
-            flex: 1,
-            height: "32px",
-            borderRadius: "999px",
+            ...ACTION_BUTTON,
             background: "#86EFAC",
             border: "none",
             color: "#0A2E1B",
-            font: "500 13px Manrope,system-ui,sans-serif",
-            cursor: "pointer",
           }}
           onMouseEnter={(e) => (e.currentTarget.style.background = "#9df3bd")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "#86EFAC")}

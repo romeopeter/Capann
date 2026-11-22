@@ -5,7 +5,8 @@ This handbook explains how Capann is put together and how to make changes that f
 ## Start here
 
 - [Architecture](architecture.md) — extension entrypoints, overlay, and storage.
-- [Annotations](annotations.md) — annotation types, drawing, hit testing, selection, and history.
+- [Annotations](annotations.md) — annotation types (including comments vs. free text), drawing, hit testing, selection, and history.
+- [Screenshots](screenshot.md) — selecting an area, editing it with the same tools, the frame style in the side panel, and export.
 - [Canvas and memory](canvas.md) — why the overlay canvases are viewport-sized, what a canvas costs, the hard limits, and how annotations scroll with the page.
 - [Recording](recording.md) — in-page record setup, capture pipeline, visibility, and lifecycle.
 - [Premium share links](premium.md) — the extension side of Premium: which context does what, sign-in hand-off, how a stop becomes a link, and the "never lose a recording" invariant.

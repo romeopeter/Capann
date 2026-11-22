@@ -27,6 +27,7 @@ import {
   saveCopyPreference,
   saveSession,
 } from "../shared/premium/store";
+import { openSidePanel } from "./side-panel";
 import type {
   AccountSummary,
   BackgroundToContentMessage,
@@ -122,24 +123,6 @@ export function downloadCopy(
   });
 }
 
-/**
- * Opens the links side panel. `sidePanel.open()` must run in the same task as
- * the user's click, so it is called before anything is awaited. If Chrome
- * refuses (no gesture, older version), the same page opens in a tab.
- */
-function openLinks(sender: chrome.runtime.MessageSender): Promise<{ ok: boolean }> {
-  const windowId = sender.tab?.windowId;
-  const fallback = () =>
-    chrome.tabs
-      .create({ url: chrome.runtime.getURL("sidepanel.html") })
-      .then(() => ({ ok: true }));
-  if (windowId === undefined) return fallback();
-  return chrome.sidePanel
-    .open({ windowId })
-    .then(() => ({ ok: true }))
-    .catch(fallback);
-}
-
 type PremiumContentMessage = Extract<
   ContentToBackgroundMessage,
   { kind: `premium-${string}` | "share-copy-choice" }
@@ -193,7 +176,8 @@ export function handlePremiumMessage(
         })(),
       );
     case "premium-open-links":
-      return reply(openLinks(sender));
+      // Synchronous: sidePanel.open() needs the click's user gesture.
+      return reply(openSidePanel(sender, "links"));
     case "premium-copy-preference":
       return reply(saveCopyPreference(message.preference).then(accountSummary));
     case "share-copy-choice": {

@@ -7,7 +7,8 @@ ever being lost.
 
 Everything here exists only in the premium build. `PREMIUM_ENABLED`
 (`src/shared/features.ts`) gates the UI and the worker; `scripts/build.mjs` adds
-the side panel and the website connection to the premium manifest. The free
+the website connection to the premium manifest. The side panel ships in every
+build (its Screenshot tab is free); Premium adds its Links tab. The free
 build shows one link to the pricing page and makes no network calls.
 
 ## Where each piece runs
@@ -20,7 +21,7 @@ different powers. The design follows from those limits.
 | Content script (`premium-panel.tsx`) | Draw UI in the page, use the page's clipboard | Call the API (it is subject to the page's CORS) | Account row, share card, "Save a copy?" dialog, auto-copy |
 | Service worker (`background/premium.ts`) | Call the API, `chrome.storage`, `chrome.downloads`, receive website messages | Stay alive: Chrome stops it after ~30 s idle; no DOM, no `XMLHttpRequest` | Account, sign-in, upgrade, website hand-off, relaying status, link history |
 | Offscreen document (`offscreen/share.ts`) | Hold the recording `Blob`, call the API, report upload progress | Use `chrome.storage` (offscreen documents only get `chrome.runtime`) | Upload, the local-copy decision |
-| Side panel (`sidepanel/`) | Everything an extension page can | — | Links list with countdowns, link recovery |
+| Side panel, Links tab (`sidepanel/links-panel.tsx`) | Everything an extension page can | — | Links list with countdowns, link recovery |
 
 Two consequences shape everything else:
 
@@ -157,11 +158,12 @@ user accepts.
 The side panel merges the server's list into the local history every time it
 syncs, so the fallback gets better over time. Links are pruned at expiry.
 
-The side panel opens from **My links**. `chrome.sidePanel.open()` must be
-called in response to a user gesture, and Chrome carries the gesture from a
-content-script click into the worker's message handler only until the first
-`await`. So the worker calls it synchronously, and if Chrome still refuses, it
-opens the same page in a tab.
+**My links** opens the side panel on its Links tab. `chrome.sidePanel.open()`
+must be called in response to a user gesture, and Chrome carries the gesture
+from a content-script click into the worker's message handler only until the
+first `await`. So `openSidePanel` (background/side-panel.ts) calls it
+synchronously, after noting the tab in `chrome.storage.session`; if Chrome still
+refuses, it opens `sidepanel.html#links` in a tab.
 
 ## Testing
 

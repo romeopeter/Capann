@@ -1,14 +1,14 @@
 # Capann
 
 Chrome extension (Manifest V3) for presenting over a screen share: annotate any
-web page, and record the tab to a local WebM. The free features run entirely
+web page, take framed screenshots, and record the tab to a local WebM. The free features run entirely
 locally — no accounts, no network calls, no uploads. Premium turns a recording
 into a 7-day share link, backed by a separate Cloudflare Worker in
 [`backend/`](backend/README.md).
 
 ## Features
 
-Annotation and instant tab recording are **free**. Premium adds shareable links;
+Annotation, screenshots, and instant tab recording are **free**. Premium adds shareable links;
 a browser-AI layer is planned.
 
 ### Mark screen
@@ -17,16 +17,27 @@ a browser-AI layer is planned.
 - **Highlighter** — translucent broad strokes.
 - **Arrow** — drag to draw; head styles triangle / chevron / stick / **bender** (curved connector).
 - **Shapes** — rectangle and ellipse, with an optional fill.
+- **Text** — click anywhere and type straight onto the page. Pick the color and size as usual, and a font: Sans, Serif, Mono, or Hand. Click a text to edit it; select one to restyle it.
 - **Comment** — click to place a Figma-style comment bubble; `Enter` sends, `Shift+Enter` adds a line, click it again to edit.
 - **Select** — move, resize, and rotate annotations (Shift snaps rotation to 15°). Drag a comment's tail tip to re-aim what it points at.
 - **Laser pointer** — a fading trail that replaces the cursor without blocking clicks.
 - **Spotlight** — dims everything except a soft circle around the cursor, without blocking clicks.
+- **Zoom lens** — a round magnifier that follows the cursor (1.5× / 2× / 3×, small / medium / large), without blocking clicks.
 - **Eraser** — remove individual marks.
+- **Screenshot** — drag over an area to capture it, then mark it up and frame it (below).
+- Hover a tool to see its name and what it does in the panel header; the header shows the active tool otherwise.
 - Undo / redo, duplicate (`Ctrl/Cmd+D`), delete (`Delete` / `Backspace`).
 - Countdown timer (5 / 10 / 15 min) and Screen / Blackout / Whiteout mask.
 - **Save PNG** — captures the tab composited with your annotations.
 - Annotations scroll with the page (window scrolling; apps that scroll an inner panel keep them fixed).
 - Per-tab persistence: annotations survive tab switches and reloads until you hit Clear.
+
+### Screenshot (in Mark screen)
+
+- Pick the **Screenshot** tool in the Mark screen panel, then drag a box over the page (or take the whole visible area); marks already on the page come along.
+- Mark it up with the same tools on the frozen image. Nothing touches the page's own annotations.
+- **Style** opens the side panel: a minimal background (soft solids, quiet gradients, a custom color, or none), padding, rounded corners, shadow, and border. The frame updates live. These controls appear only while a screenshot is open.
+- **Copy** to the clipboard or **Save** a PNG, at full resolution.
 
 ### Record
 
@@ -41,7 +52,7 @@ a browser-AI layer is planned.
 - **Upgrade** opens Bachs checkout for the signed-in email; the panel picks up the new plan when you return.
 - When a paid user stops a recording, it **uploads and the link is copied** to the clipboard. A dialog asks whether to also keep the `.webm` (with "Don't ask again"; change it later under **Keep a copy**).
 - A failed upload always saves the file locally, so a recording is never lost.
-- **My links** opens Chrome's side panel: every live link with Copy, Open, and a countdown to its 7-day expiry, plus "Lost a link?" email recovery.
+- **My links** opens the side panel's Links tab: every live link with Copy, Open, and a countdown to its 7-day expiry, plus "Lost a link?" email recovery.
 - The free build shows one link to the pricing page instead, and makes no network calls.
 
 ## Activation and shortcuts
@@ -55,6 +66,7 @@ Click the extension action, or press **Alt+Shift+S**, to open the in-page choose
 | `Alt+Shift+T` | Next tool | Pause / resume |
 | `Alt+Shift+C` | Clear annotations | Discard recording |
 | `Esc` | Exit draw mode (keeps annotations) | — |
+| `Enter` / `Esc` (choosing a screenshot area) | Whole visible area / cancel | — |
 
 Chrome-protected pages (`chrome://`, the Web Store, extension pages) cannot be
 annotated or recorded.
@@ -67,16 +79,16 @@ code; they differ only in `capann.config.json`.
 | Branch | Edition | Includes |
 |---|---|---|
 | `dev` | `premium` by default, switchable | Everything; switch editions at build time |
-| `free` | `free` | Annotation + recording |
+| `free` | `free` | Annotation, screenshots, and recording |
 | `premium` | `premium` | Free features + Premium (browser AI, shareable links) |
 
 Work and test on `dev`, then merge `dev` into `free` and `premium`. Never edit
 the edition in `capann.config.json` on `dev` and never hardcode an edition in
 source — use the edition build commands below. The gate (`PREMIUM_ENABLED`)
 lives in `src/shared/features.ts`. The premium build adds the account row, share
-flow, and links side panel, and its manifest adds `sidePanel` and
+flow, and the side panel's Links tab, and its manifest adds
 `externally_connectable` for the website; the free manifest is `manifest.json`
-unchanged.
+unchanged (the side panel, with its Screenshot tab, is in both).
 
 ## Build
 
@@ -130,13 +142,17 @@ src/content/             Content script (React, Shadow DOM)
   cursors.ts               Per-tool cursors (Phosphor icons)
   render.ts, geometry.ts   Canvas drawing, hit tests, resize/rotate math
   text-bubble.ts           Comment bubble layout and outline
+  free-text.ts             Free text (Text tool): fonts, layout, composer
+  zoom-lens.ts             Zoom lens drawing
+  screenshot.tsx           Screenshot area selector, framed editor stage, export
 src/offscreen/           Offscreen recorder: composition, audio mixing, local WebM
   share.ts, uploader.ts    Premium share jobs and the single/multipart uploader
 src/permissions/         One-time camera/microphone grant page
-src/sidepanel/           Premium "Your links" side panel
+src/sidepanel/           Side panel: Screenshot style (every build), Links (Premium)
 src/shared/
   types.ts                 Annotation types and every message contract
   features.ts              Edition gate (PREMIUM_ENABLED), API and site URLs
+  screenshot-style.ts      Screenshot frame style, shared by the page and side panel
   premium/                 Backend API client and chrome.storage.local state
 scripts/build.mjs        esbuild bundler -> dist/ (reads the edition, writes the manifest)
 ```

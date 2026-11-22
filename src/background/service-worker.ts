@@ -17,6 +17,7 @@ import {
   registerWebsiteMessaging,
   shareRequestForStop,
 } from "./premium";
+import { openSidePanel } from "./side-panel";
 
 if (PREMIUM_ENABLED) registerWebsiteMessaging();
 
@@ -829,6 +830,11 @@ chrome.runtime.onMessage.addListener(
           callback,
         );
       else chrome.tabs.captureVisibleTab({ format: "png" }, callback);
+      return true;
+    }
+    if (message.kind === "open-side-panel") {
+      // Before any await: sidePanel.open() needs the click's user gesture.
+      void openSidePanel(sender, message.section).then(sendResponse);
       return true;
     }
     if (message.kind === "download-png") {

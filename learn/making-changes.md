@@ -13,6 +13,8 @@ For backend changes (`backend/`), follow the rules in [Premium backend](backend.
 
 For Premium extension changes, read [Premium share links](premium.md) first. Gate on `PREMIUM_ENABLED`, keep API calls out of the content script, keep the token out of the page, and preserve "never lose a recording": the offscreen document closes only when no share job needs it, and a failed upload always saves the file. Build both editions and confirm the free build's manifest is unchanged.
 
+Any new feature that captures the tab's pixels must call `captureTab` in `OverlayApp.tsx`, never `capture-visible-tab` directly: it hides the overlay first, restores it to what the recorder wants, and serializes captures. Any new path that writes or persists `objects` must respect a parked page document while a screenshot is edited (see [Screenshots](screenshot.md)).
+
 For recording changes, also update [Recording](recording.md). Check all three typed message boundaries (content script, service worker, and offscreen document), preserve tab-specific capture invocation, and ensure capture errors do not result in a download.
 
 ## Adding an annotation behavior

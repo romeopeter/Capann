@@ -21,11 +21,12 @@
  * - `captureHidden` belongs to the recorder. It means "a capture may be
  *   running, keep the annotation overlay out of the frames," and only
  *   recording status writes it.
- * - PNG export needs the SAME effect (the overlay must be off screen before a
- *   screenshot) but must NOT reuse `captureHidden`, because export is a
- *   one-shot hide that has to restore to whatever the recorder currently wants.
- *   `savePng` therefore hides the shadow host directly and restores from
- *   `captureHidden`.
+ * - Every other pixel capture needs the SAME effect (the overlay must be off
+ *   screen first) but must NOT reuse `captureHidden`: those are one-shot hides
+ *   that have to restore to whatever the recorder currently wants. They all go
+ *   through `captureTab`, which hides the shadow host directly, captures, and
+ *   restores to `overlayVisible`. Its callers: Save PNG, the Screenshot tool,
+ *   and the zoom lens snapshot. Captures are chained so two never overlap.
  * - "Annotate screen" is the one case where annotations are WANTED in a
  *   capture. `overlayVisible = !captureHidden || annotateWhileRecording` keeps
  *   the host on screen, but the panel (`shellView`) stays unmounted unless the
@@ -37,6 +38,12 @@
  *   visible in the capture: the presenter needs its timer, pause/stop/discard
  *   controls, and the bottom-right camera bubble. Never route it through
  *   `captureHidden`.
+ * - The Screenshot tool edits a frozen image with the annotation tools. While
+ *   it is open, `objects`/`past`/`future` belong to the SCREENSHOT and the
+ *   page's are parked in `parkedDocRef`; `page-space.ts` maps every tool into
+ *   the image (`setImageSpace`). Persistence skips a parked state, and leaving
+ *   the screenshot (Back/Close) puts the page's document back. Recording never
+ *   meets it: the Screenshot view is only reachable from the chooser.
  * - For the annotation overlay, the shadow host is the only sanctioned way to
  *   make Capann invisible to a capture. Hiding it hides everything: canvases,
  *   shell, timer/mask chips, and any open text composer.
@@ -51,9 +58,11 @@
  * Key responsibilities:
  * - Canvas lifecycle (creation, resizing, rendering)
  * - Annotation drawing logic for all tool types (pencil, highlighter, arrow, shapes, text)
- * - Undo/redo history management, laser pointer and spotlight effects
+ * - Undo/redo history management, laser pointer, spotlight, and zoom lens
+ * - Free text (the Text tool) and comments, each with its own DOM composer
+ * - The Screenshot workflow (select, edit on a frame, Copy/Save)
  * - Chrome storage integration for per-tab persistence
- * - Screenshot capture and PNG export
+ * - Screenshot capture and PNG export, all through `captureTab`
  * - Record view, recorder pre-warm, and recording status handling
  * - Premium share UI in the Record view (`premium-panel.tsx`). Recording-only:
  *   a share job starts after the capture has ended and the overlay is visible
@@ -67,6 +76,7 @@ import {
   useRef,
   useCallback,
   useContext,
+  useMemo,
   useSyncExternalStore,
 } from "react";
 import type {
@@ -75,19 +85,24 @@ import type {
   BackgroundToContentMessage,
   CaptureVisibleTabResponse,
   ContentToBackgroundMessage,
+  FreeTextAnnotation,
   GetTabIdResponse,
   MediaPermissionResponse,
   MediaPermissionState,
   Point,
   RecordOptions,
   RecordingStatus,
+  ScreenshotEditingResponse,
+  SidePanelSection,
   TabAnnotationState,
   TextAnnotation,
+  TextFont,
   ToolId,
 } from "../shared/types";
-import { STORAGE_KEY_PREFIX } from "../shared/types";
+import { STORAGE_KEY_PREFIX, TOOL_CAPTIONS, TOOL_LABELS } from "../shared/types";
 import {
   annotationBounds,
+  boundsIntersect,
   benderHandle,
   findTopmostHit,
   handleAtPoint,
@@ -123,9 +138,35 @@ import type { BubbleViewport } from "./text-bubble";
 import {
   clearCanvas,
   pagePoint,
+  screenPoint,
+  setImageSpace,
   setPageTransform,
   setScreenTransform,
+  spaceScale,
 } from "./page-space";
+import {
+  createFreeTextComposer,
+  freeFontSizeForWidth,
+  freeTextOrigin,
+  widthForFreeFontSize,
+} from "./free-text";
+import type { FreeTextComposer } from "./free-text";
+import { drawLens, LENS_RADII } from "./zoom-lens";
+import type { LensSize, LensSnapshot, ZoomLevel } from "./zoom-lens";
+import {
+  fitScreenshot,
+  renderScreenshot,
+  ScreenshotSelector,
+  ScreenshotStage,
+} from "./screenshot";
+import type { Screenshot, ViewportRect } from "./screenshot";
+import {
+  DEFAULT_SCREENSHOT_STYLE,
+  loadScreenshotStyle,
+  normalizeStyle,
+  SCREENSHOT_STYLE_KEY,
+} from "../shared/screenshot-style";
+import type { ScreenshotStyle } from "../shared/screenshot-style";
 import { CapannShell, PANEL_FADE_MS, SHELL_BUTTON } from "./shell";
 import type { ShellPosition } from "./shell";
 import { AnnotateControls } from "./annotate-controls";
@@ -156,6 +197,7 @@ const CAPTURING_TOOLS: ReadonlySet<ToolId> = new Set([
   "rectangle",
   "ellipse",
   "text",
+  "write",
   "eraser",
   "select",
 ]);
@@ -166,12 +208,55 @@ const TOOL_CYCLE_ORDER: ToolId[] = [
   "arrow",
   "rectangle",
   "ellipse",
+  "write",
   "text",
   "laser",
   "spotlight",
+  "zoom",
   "eraser",
   "select",
+  "screenshot",
 ];
+
+/**
+ * Tools that only make sense on the live page: the presenting tools, and
+ * Screenshot itself. Not offered inside the screenshot editor.
+ */
+const LIVE_ONLY_TOOLS: ReadonlySet<ToolId> = new Set([
+  "laser",
+  "spotlight",
+  "zoom",
+  "screenshot",
+]);
+/** During an annotated recording a screenshot can't open; hide its tool. */
+const NO_SCREENSHOT_TOOLS: ReadonlySet<ToolId> = new Set(["screenshot"]);
+
+/** Chrome allows about two captureVisibleTab calls per second. */
+const LENS_RETAKE_GAP_MS = 650;
+
+/**
+ * The Screenshot workflow after an area is chosen with the Screenshot tool:
+ * `capturing` while the tab is captured, then `edit` shows the framed
+ * screenshot with the normal tools drawing on it (uiView "screenshot").
+ */
+type ScreenshotPhase =
+  | { phase: "capturing" }
+  | { phase: "edit"; shot: Screenshot };
+
+/** The page's annotation document, parked while a screenshot is edited. */
+interface ParkedDocument {
+  objects: AnnotationObject[];
+  past: AnnotationObject[][];
+  future: AnnotationObject[][];
+  selectedId: string | null;
+}
+
+/** Waits until the browser has painted twice, so a style change is on screen. */
+function twoFrames(): Promise<void> {
+  return new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+}
 
 const LASER_TRAIL_MS = 450;
 
@@ -399,12 +484,17 @@ function positionTextEditor(editor: TextEditor): void {
   const bubbleWidth = body.right - body.left;
   const bubbleHeight = body.bottom - body.top;
 
-  // The composer is position: fixed; layout is in page coordinates.
-  const screenLeft = body.left - window.scrollX;
+  // The composer is position: fixed; layout is in page coordinates. On a
+  // screenshot the canvas is scaled to fit, so the composer scales with it
+  // (transform-origin is its top-left) and the note doesn't jump on commit.
+  const scale = spaceScale();
+  const screen = screenPoint({ x: body.left, y: body.top });
+  const screenLeft = screen.x;
   editor.container.style.left = `${screenLeft}px`;
-  editor.container.style.top = `${body.top - window.scrollY}px`;
+  editor.container.style.top = `${screen.y}px`;
   editor.container.style.width = `${bubbleWidth}px`;
   editor.container.style.height = `${bubbleHeight}px`;
+  editor.container.style.transform = scale === 1 ? "" : `scale(${scale})`;
 
   editor.svg.setAttribute("viewBox", `0 0 ${bubbleWidth} ${bubbleHeight}`);
   editor.svg.setAttribute("width", `${bubbleWidth}`);
@@ -422,8 +512,8 @@ function positionTextEditor(editor: TextEditor): void {
 
   const buttonGap = 38;
   const canUseRight =
-    screenLeft + bubbleWidth + buttonGap <= window.innerWidth - 8;
-  const canUseLeft = screenLeft - buttonGap >= 8;
+    screenLeft + (bubbleWidth + buttonGap) * scale <= window.innerWidth - 8;
+  const canUseLeft = screenLeft - buttonGap * scale >= 8;
   editor.send.style.left = "";
   editor.send.style.right = "";
   if (canUseRight) {
@@ -443,7 +533,7 @@ export function OverlayApp() {
   const shadowRoot = useContext(ShadowRootContext);
   const [tabId, setTabId] = useState(-1);
   const [uiView, setUiView] = useState<
-    "closed" | "chooser" | "annotate" | "record"
+    "closed" | "chooser" | "annotate" | "record" | "screenshot"
   >("closed");
   /**
    * Panel drag position. Owned here rather than in `CapannShell` because each
@@ -517,6 +607,26 @@ export function OverlayApp() {
   const [maskOn, setMaskOn] = useState(false);
   const [maskMode, setMaskMode] = useState(0); // 0 = screen, 1 = blackout, 2 = whiteout
   const [seconds, setSeconds] = useState(754);
+  // The tool under the pointer (or keyboard focus) in the panel. The header
+  // previews its name and caption; otherwise it shows the active tool.
+  const [previewTool, setPreviewTool] = useState<ToolId | null>(null);
+  // Free text (the Text tool). Color and size come from the shared palette
+  // and slider; the font is the one setting of its own.
+  const [textFont, setTextFont] = useState<TextFont>("sans");
+  // Zoom lens settings, kept for the session like the other tool settings.
+  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>(2);
+  const [lensSize, setLensSize] = useState<LensSize>("M");
+  // Screenshot workflow (uiView "screenshot"). While a screenshot is being
+  // edited, `objects`/`past`/`future` are the SCREENSHOT's document and the
+  // page's are parked in `parkedDocRef` (see enterScreenshotDoc).
+  const [screenshot, setScreenshot] = useState<ScreenshotPhase | null>(null);
+  const [shotStyle, setShotStyle] = useState<ScreenshotStyle>(
+    DEFAULT_SCREENSHOT_STYLE,
+  );
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   // Premium: the account (no token) and the latest share job for this tab.
   // Both are inert in the free build.
   const premium = usePremiumAccount(uiView === "record");
@@ -546,6 +656,24 @@ export function OverlayApp() {
   const rafHandleRef = useRef(0);
   const saveTimerRef = useRef(0);
   const editorRef = useRef<TextEditor | null>(null);
+  // The free-text composer; at most one of it and `editorRef` is open.
+  const freeEditorRef = useRef<FreeTextComposer | null>(null);
+  /**
+   * The page's annotations while a screenshot is edited. Non-null means the
+   * live document is the screenshot's: persistence skips it, and leaving the
+   * screenshot puts this back.
+   */
+  const parkedDocRef = useRef<ParkedDocument | null>(null);
+  // Zoom lens: the latest page snapshot, and settings for the rAF loop.
+  const lensSnapshotRef = useRef<LensSnapshot | null>(null);
+  const lensSettingsRef = useRef({ zoom: 2, radius: LENS_RADII.M as number });
+  lensSettingsRef.current = { zoom: zoomLevel, radius: LENS_RADII[lensSize] };
+  // Latest overlay visibility for capture restores (see captureTab).
+  const overlayVisibleRef = useRef(overlayVisible);
+  overlayVisibleRef.current = overlayVisible;
+  // Captures run one at a time, so one can never restore the overlay while
+  // another is still reading pixels.
+  const captureChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const objectsRef = useRef<AnnotationObject[]>(objects);
   const selectionDragRef = useRef<{
     kind: "move" | "resize" | "bend" | "rotate" | "tip";
@@ -575,6 +703,8 @@ export function OverlayApp() {
   // Tear down a composer if the overlay itself unmounts mid-edit.
   useEffect(() => {
     return () => {
+      freeEditorRef.current?.input.remove();
+      freeEditorRef.current = null;
       const editor = editorRef.current;
       if (!editor) return;
       window.removeEventListener("resize", editor.onResize);
@@ -592,11 +722,15 @@ export function OverlayApp() {
     if (tabId < 0) return;
     const result = await chrome.storage.session.get(storageKey());
     const state = result[storageKey()] as TabAnnotationState | undefined;
-    if (state?.objects) setObjects(state.objects);
+    if (!state?.objects) return;
+    // A screenshot is being edited: the page's document is parked.
+    if (parkedDocRef.current) parkedDocRef.current.objects = state.objects;
+    else setObjects(state.objects);
   }, [tabId, storageKey]);
 
   const scheduleSave = useCallback(() => {
-    if (tabId < 0) return;
+    // A screenshot's annotations are not the page's: never persist them.
+    if (tabId < 0 || parkedDocRef.current) return;
     window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
       const state: TabAnnotationState = { objects };
@@ -661,7 +795,9 @@ export function OverlayApp() {
         ? selectCursor(selectedId ? "move" : "select")
         : tool === "eraser"
           ? eraserCursor(strokeWidth)
-          : (toolCursor(tool, color) ?? "crosshair"),
+          : tool === "write"
+            ? "text"
+            : (toolCursor(tool, color) ?? "crosshair"),
     );
 
     // The loop below outlives this effect run, so it must read the tool from a
@@ -670,14 +806,36 @@ export function OverlayApp() {
     toolRef.current = tool;
 
     const needsRaf =
-      drawModeEnabled && (tool === "laser" || tool === "spotlight");
+      drawModeEnabled &&
+      (tool === "laser" || tool === "spotlight" || tool === "zoom");
     if (needsRaf && !rafHandleRef.current) {
       const renderLiveOverlay = () => {
-        if (!laserActiveRef.current) return;
+        if (!laserActiveRef.current) {
+          // The lens must not linger where the pointer left the window.
+          if (toolRef.current === "zoom") clearLive();
+          return;
+        }
 
         const liveCanvas = liveCanvasRef.current;
         if (!liveCanvas) return;
         const ctx = liveCanvas.getContext("2d")!;
+
+        if (toolRef.current === "zoom") {
+          clearLive();
+          ctx.save();
+          setScreenTransform(ctx);
+          const { zoom, radius } = lensSettingsRef.current;
+          drawLens(
+            ctx,
+            cursorRef.current,
+            zoom,
+            radius,
+            lensSnapshotRef.current,
+            objectsRef.current,
+          );
+          ctx.restore();
+          return;
+        }
 
         const now = performance.now();
         laserTrailRef.current = laserTrailRef.current.filter(
@@ -888,15 +1046,147 @@ export function OverlayApp() {
   useLayoutEffect(() => {
     finishTextInputRef.current = finishTextInput;
   }, [finishTextInput]);
-  const commitTextInput = useCallback(
-    () => finishTextInputRef.current("commit"),
-    [],
+
+  /**
+   * Commit or cancel the free-text composer. Same rules as comments: Esc
+   * restores an existing text or drops a new one, and an emptied text is
+   * deleted (undoable).
+   */
+  const finishFreeText = useCallback(
+    (mode: "commit" | "cancel") => {
+      const composer = freeEditorRef.current;
+      if (!composer) return;
+      freeEditorRef.current = null;
+      // Trailing blank lines are noise; leading spaces are deliberate.
+      const text = composer.input.value.replace(/\s+$/, "");
+      const existingId = composer.existingId;
+      composer.input.remove();
+      setEditingId(null);
+      if (mode === "cancel") return;
+
+      const current = objectsRef.current;
+      const existing = existingId
+        ? current.find(
+            (object): object is FreeTextAnnotation =>
+              object.id === existingId && object.type === "freetext",
+          )
+        : undefined;
+      const record = (next: AnnotationObject[], selected: string | null) => {
+        objectsRef.current = next;
+        setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+        setFuture([]);
+        setObjects(next);
+        setSelectedId(selected);
+      };
+
+      if (existing) {
+        if (!text.trim()) {
+          record(
+            current.filter((object) => object.id !== existing.id),
+            null,
+          );
+          return;
+        }
+        const updated: FreeTextAnnotation = {
+          ...existing,
+          text,
+          color: composer.color,
+          font: composer.font,
+          fontSize: composer.fontSize,
+          strokeWidth: widthForFreeFontSize(composer.fontSize),
+        };
+        if (
+          updated.text === existing.text &&
+          updated.color === existing.color &&
+          updated.font === existing.font &&
+          updated.fontSize === existing.fontSize
+        ) {
+          setSelectedId(existing.id);
+          return;
+        }
+        record(
+          current.map((object) => (object.id === existing.id ? updated : object)),
+          existing.id,
+        );
+        return;
+      }
+
+      if (!text.trim()) return;
+      const annotation: FreeTextAnnotation = {
+        id: makeId(),
+        type: "freetext",
+        color: composer.color,
+        strokeWidth: widthForFreeFontSize(composer.fontSize),
+        createdAt: Date.now(),
+        position: composer.position,
+        text,
+        fontSize: composer.fontSize,
+        font: composer.font,
+      };
+      record([...current, annotation], annotation.id);
+    },
+    [makeId],
+  );
+  const finishFreeTextRef = useRef(finishFreeText);
+  useLayoutEffect(() => {
+    finishFreeTextRef.current = finishFreeText;
+  }, [finishFreeText]);
+
+  /** Flush whichever composer is open (comment or free text). */
+  const commitTextInput = useCallback(() => {
+    finishTextInputRef.current("commit");
+    finishFreeTextRef.current("commit");
+  }, []);
+
+  /** Open the free-text composer at `position`, or on an existing text. */
+  const beginFreeTextInput = useCallback(
+    (position: Point, existing?: FreeTextAnnotation) => {
+      commitTextInput();
+      if (!shadowRoot) return;
+      // Re-read the text after that commit: it may have just changed.
+      const current = existing
+        ? objectsRef.current.find(
+            (object): object is FreeTextAnnotation =>
+              object.id === existing.id && object.type === "freetext",
+          )
+        : undefined;
+      clearLive();
+      const composer = createFreeTextComposer(shadowRoot, {
+        position: current?.position ?? position,
+        existingId: current?.id ?? null,
+        text: current?.text ?? "",
+        color: current?.color ?? color,
+        font: current?.font ?? textFont,
+        fontSize: current?.fontSize ?? freeFontSizeForWidth(strokeWidth),
+      });
+      freeEditorRef.current = composer;
+      setEditingId(current?.id ?? null);
+
+      const { input } = composer;
+      input.addEventListener("blur", () => finishFreeTextRef.current("commit"));
+      input.addEventListener("keydown", (event) => {
+        if (event.isComposing) return;
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          finishFreeTextRef.current("commit");
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          finishFreeTextRef.current("cancel");
+        }
+      });
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    },
+    [shadowRoot, clearLive, color, textFont, strokeWidth, commitTextInput],
   );
 
   const beginTextInput = useCallback(
     (anchor: Point, existing?: TextAnnotation) => {
       // Clicking another note commits the current draft first.
       finishTextInputRef.current("commit");
+      finishFreeTextRef.current("commit");
       if (!shadowRoot) return;
       // Re-read the note after that commit: its text may have just changed.
       const current = existing
@@ -1016,12 +1306,14 @@ export function OverlayApp() {
   const getSelectedHandle = useCallback(
     (point: Point, ann: AnnotationObject) => {
       // Freeform transformer: 8 handles for every resizable type
-      // (rectangle, ellipse, arrow, text). Strokes move but don't resize.
+      // (rectangle, ellipse, arrow, text, free text). Strokes move but don't
+      // resize.
       if (
         ann.type !== "rectangle" &&
         ann.type !== "ellipse" &&
         ann.type !== "arrow" &&
-        ann.type !== "text"
+        ann.type !== "text" &&
+        ann.type !== "freetext"
       )
         return -1;
       return handleAtPoint(point, ann);
@@ -1054,7 +1346,8 @@ export function OverlayApp() {
         ann.type === "rectangle" ||
         ann.type === "ellipse" ||
         ann.type === "arrow" ||
-        ann.type === "text"
+        ann.type === "text" ||
+        ann.type === "freetext"
       ) {
         for (const corner of handlesForAnnotation(ann)) {
           ctx.beginPath();
@@ -1127,6 +1420,18 @@ export function OverlayApp() {
       for (let i = list.length - 1; i >= 0; i--) {
         const candidate = list[i]!;
         if (candidate.type === "text" && hitTest(point, candidate))
+          return candidate;
+      }
+      return undefined;
+    },
+    [],
+  );
+
+  const findFreeText = useCallback(
+    (point: Point, list: AnnotationObject[]) => {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const candidate = list[i]!;
+        if (candidate.type === "freetext" && hitTest(point, candidate))
           return candidate;
       }
       return undefined;
@@ -1242,6 +1547,18 @@ export function OverlayApp() {
         return;
       }
 
+      if (tool === "write") {
+        // Same focus rule as comments. Clicking a text edits it in place.
+        e.preventDefault();
+        const target = findFreeText(point, objectsRef.current);
+        beginFreeTextInput(
+          target?.position ??
+            freeTextOrigin(point, freeFontSizeForWidth(strokeWidth)),
+          target,
+        );
+        return;
+      }
+
       if (tool === "pencil" || tool === "highlighter") {
         currentPointsRef.current = [point];
       } else if (
@@ -1261,6 +1578,9 @@ export function OverlayApp() {
       findSelectable,
       beginTextInput,
       findTextAnnotation,
+      beginFreeTextInput,
+      findFreeText,
+      strokeWidth,
       eraseAt,
     ],
   );
@@ -1639,6 +1959,16 @@ export function OverlayApp() {
         );
         return;
       }
+      if (selected.type === "freetext") {
+        setObjects((prev) =>
+          prev.map((object) =>
+            object.id === selectedId
+              ? { ...object, fontSize: freeFontSizeForWidth(width), strokeWidth: width }
+              : object,
+          ),
+        );
+        return;
+      }
       if (
         selected.type === "rectangle" ||
         selected.type === "ellipse" ||
@@ -1654,6 +1984,43 @@ export function OverlayApp() {
       }
     },
     [objects, selectedId],
+  );
+
+  /**
+   * Restyle the selected free text, like the size slider does for any
+   * selected object. Free text is the one type whose color and font change
+   * after it is made, because writing it and choosing its look go together.
+   */
+  const restyleSelectedText = useCallback(
+    (change: Partial<Pick<FreeTextAnnotation, "color" | "font">>) => {
+      const current = objectsRef.current;
+      const selected = current.find((object) => object.id === selectedId);
+      if (selected?.type !== "freetext") return;
+      const updated: FreeTextAnnotation = { ...selected, ...change };
+      if (updated.color === selected.color && updated.font === selected.font) return;
+      const next = current.map((object) => (object.id === selected.id ? updated : object));
+      objectsRef.current = next;
+      setPast((past) => [...past, current].slice(-HISTORY_LIMIT));
+      setFuture([]);
+      setObjects(next);
+    },
+    [selectedId],
+  );
+
+  const changeColor = useCallback(
+    (next: string) => {
+      setColor(next);
+      restyleSelectedText({ color: next });
+    },
+    [restyleSelectedText],
+  );
+
+  const changeFont = useCallback(
+    (font: TextFont) => {
+      setTextFont(font);
+      restyleSelectedText({ font });
+    },
+    [restyleSelectedText],
   );
 
   const finishWidthEdit = useCallback(() => {
@@ -1688,11 +2055,18 @@ export function OverlayApp() {
 
   const cycleTool = useCallback(() => {
     commitTextInput();
-    const idx = TOOL_CYCLE_ORDER.indexOf(tool);
-    const next = TOOL_CYCLE_ORDER[(idx + 1) % TOOL_CYCLE_ORDER.length]!;
+    // A frozen screenshot has no use for the presenting tools.
+    const order =
+      uiView === "screenshot"
+        ? TOOL_CYCLE_ORDER.filter((t) => !LIVE_ONLY_TOOLS.has(t))
+        : TOOL_CYCLE_ORDER;
+    const idx = order.indexOf(tool);
+    const next = order[(idx + 1) % order.length]!;
+    if (next === "screenshot")
+      beforeScreenshotRef.current = { tool, drawMode: drawModeEnabled };
     setTool(next);
-    setStatusText(`Tool: ${next}`);
-  }, [commitTextInput, tool]);
+    setStatusText(`Tool: ${TOOL_LABELS[next]}`);
+  }, [commitTextInput, tool, uiView, drawModeEnabled]);
 
   const handleUndo = useCallback(() => {
     if (past.length === 0) return;
@@ -1783,6 +2157,43 @@ export function OverlayApp() {
     return `${mm}:${ss}`;
   }, []);
 
+  /**
+   * Make `shotObjects` the live document. The page's annotations, history, and
+   * selection are parked untouched, so every tool (and undo/redo) works on the
+   * screenshot without knowing it, and nothing of the screenshot is persisted.
+   */
+  const enterScreenshotDoc = useCallback(
+    (shotObjects: AnnotationObject[]) => {
+      if (parkedDocRef.current) return;
+      parkedDocRef.current = {
+        objects: objectsRef.current,
+        past,
+        future,
+        selectedId,
+      };
+      objectsRef.current = shotObjects;
+      setObjects(shotObjects);
+      setPast([]);
+      setFuture([]);
+      setSelectedId(null);
+    },
+    [past, future, selectedId],
+  );
+
+  /** Discard the screenshot and give the page its document back. */
+  const leaveScreenshot = useCallback(() => {
+    commitTextInput();
+    setScreenshot(null);
+    const parked = parkedDocRef.current;
+    if (!parked) return;
+    parkedDocRef.current = null;
+    objectsRef.current = parked.objects;
+    setObjects(parked.objects);
+    setPast(parked.past);
+    setFuture(parked.future);
+    setSelectedId(parked.selectedId);
+  }, [commitTextInput]);
+
   const goBackToChooser = useCallback(() => {
     // Back never clears annotations or resets tool settings.
     commitTextInput();
@@ -1790,25 +2201,58 @@ export function OverlayApp() {
   }, [commitTextInput]);
 
   /**
+   * Capture the visible tab WITHOUT Capann's overlay. Every pixel capture goes
+   * through here: Save PNG, the Screenshot tool, and the zoom lens snapshot.
+   *
+   * ORDERING IS LOAD-BEARING (the capture invariant in AGENTS.md):
+   *
+   *   1. hide the shadow host       -> synchronous style, not React state
+   *   2. wait two animation frames  -> the compositor paints it hidden
+   *   3. capture the tab            -> pixels contain the page only
+   *   4. restore the host           -> to `overlayVisible`, never blindly
+   *
+   * The hide is deliberately local (host style) rather than `captureHidden`:
+   * that flag belongs to the recorder and must survive this unchanged. Sharing
+   * it is exactly what broke export once (see the fusion note above).
+   *
+   * Captures are chained, so two can never overlap: an overlapping one would
+   * restore the host while the other is still reading pixels. The chain step
+   * starts in a microtask, which still runs before the next paint, so a hide
+   * requested from a click handler lands before the frame.
+   */
+  const captureTab = useCallback((): Promise<string> => {
+    const run = async (): Promise<string> => {
+      const host =
+        shadowRoot?.host instanceof HTMLElement ? shadowRoot.host : null;
+      if (host) host.style.visibility = "hidden";
+      try {
+        await twoFrames();
+        const response = (await chrome.runtime.sendMessage({
+          kind: "capture-visible-tab",
+        } satisfies ContentToBackgroundMessage)) as CaptureVisibleTabResponse;
+        if (response?.kind === "capture-visible-tab-result") return response.dataUrl;
+        throw new Error(
+          response?.kind === "capture-visible-tab-error"
+            ? response.error
+            : "Capture failed",
+        );
+      } finally {
+        // Restore to whatever the recorder currently wants.
+        if (host)
+          host.style.visibility = overlayVisibleRef.current ? "visible" : "hidden";
+      }
+    };
+    const next = captureChainRef.current.then(run, run);
+    captureChainRef.current = next.catch(() => undefined);
+    return next;
+  }, [shadowRoot]);
+
+  /**
    * Export the visible tab with annotations burned in.
    *
-   * ORDERING IS LOAD-BEARING, for the same reason it is in `startRecording`:
-   * a capture must never see Capann's own UI.
-   *
-   *   1. hide the shadow host synchronously
-   *   2. wait two animation frames so the compositor paints it hidden
-   *   3. capture the tab        -> pixels contain the page only
-   *   4. restore the host       -> composition no longer needs the DOM
-   *   5. draw each annotation once onto the screenshot
-   *
-   * Step 5 is why step 1 exists. If the overlay is still visible when
-   * `capture-visible-tab` runs, the screenshot already contains the rendered
-   * objects and step 5 doubles every stroke, arrowhead, and outline.
-   *
-   * The hide is deliberately local (host style) rather than reusing
-   * `captureHidden`: that flag belongs to the recorder's lifecycle and must
-   * survive this function unchanged. Sharing it is exactly what broke export
-   * before — see the fusion note at the top of this file.
+   * `captureTab` returns pixels of the page only, so the annotations are drawn
+   * here EXACTLY ONCE. If the capture ever included the overlay, every stroke,
+   * arrowhead, and outline would appear twice.
    */
   const savePng = useCallback(async () => {
     if (savingPngRef.current) return;
@@ -1819,38 +2263,9 @@ export function OverlayApp() {
     commitTextInput();
     setStatusText("Capturing...");
 
-    const host =
-      shadowRoot?.host instanceof HTMLElement ? shadowRoot.host : null;
-    // Restore to whatever the recorder currently wants — not blindly visible.
-    const restoreHost = () => {
-      if (host) host.style.visibility = overlayVisible ? "visible" : "hidden";
-    };
-
-    // Hide before the paint. The click handler runs before React commits, and
-    // `capture-visible-tab` reads whatever is currently on screen, so a state
-    // update alone is one frame too late.
     try {
-      if (host) host.style.visibility = "hidden";
-
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      );
-
-      const response = (await chrome.runtime.sendMessage({
-        kind: "capture-visible-tab",
-      } satisfies ContentToBackgroundMessage)) as CaptureVisibleTabResponse;
-
-      // Pixels are captured. Bring the UI back before the slower compose step
-      // so the user is not left staring at a blank tab while it encodes.
-      restoreHost();
-
-      if (response.kind === "capture-visible-tab-error") {
-        setStatusText(`Save failed: ${response.error}`);
-        return;
-      }
-      if (response.kind !== "capture-visible-tab-result") return;
-
-      const screenshot = await loadImage(response.dataUrl);
+      const dataUrl = await captureTab();
+      const screenshot = await loadImage(dataUrl);
       const dpr = window.devicePixelRatio || 1;
       const composite = document.createElement("canvas");
       composite.width = Math.round(window.innerWidth * dpr);
@@ -1864,41 +2279,59 @@ export function OverlayApp() {
       // drawing here a second time would duplicate every object.
       for (const obj of objectsRef.current) drawAnnotation(ctx, obj);
 
-      const dataUrl = composite.toDataURL("image/png");
       const filename = `capann-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
       await chrome.runtime.sendMessage({
         kind: "download-png",
-        dataUrl,
+        dataUrl: composite.toDataURL("image/png"),
         filename,
       } satisfies ContentToBackgroundMessage);
       setStatusText("Saved!");
     } catch (err) {
-      setStatusText("Save failed");
+      setStatusText(
+        err instanceof Error && err.message
+          ? `Save failed: ${err.message}`
+          : "Save failed",
+      );
       console.error("[Capann] save failed", err);
     } finally {
-      restoreHost();
       savingPngRef.current = false;
     }
-  }, [commitTextInput, overlayVisible, shadowRoot]);
+  }, [commitTextInput, captureTab]);
+
+  // Screenshot is a tool of Mark screen. Back from its editor returns to the
+  // tool (and draw mode) the presenter had before choosing it.
+  const beforeScreenshotRef = useRef({ tool: "pencil" as ToolId, drawMode: false });
 
   const handleToolChange = useCallback(
     (newTool: ToolId) => {
       commitTextInput();
+      if (newTool === "screenshot" && tool !== "screenshot")
+        beforeScreenshotRef.current = { tool, drawMode: drawModeEnabled };
       setTool(newTool);
       resetDrag();
     },
-    [commitTextInput, resetDrag],
+    [commitTextInput, resetDrag, tool, drawModeEnabled],
   );
 
   const selectedShape = objects.find((object) => object.id === selectedId);
   const displayedWidth =
-    selectedShape &&
-    (selectedShape.type === "rectangle" ||
-      selectedShape.type === "ellipse" ||
-      selectedShape.type === "arrow" ||
-      selectedShape.type === "text")
-      ? selectedShape.strokeWidth
-      : strokeWidth;
+    selectedShape?.type === "freetext"
+      ? widthForFreeFontSize(selectedShape.fontSize)
+      : selectedShape &&
+          (selectedShape.type === "rectangle" ||
+            selectedShape.type === "ellipse" ||
+            selectedShape.type === "arrow" ||
+            selectedShape.type === "text")
+        ? selectedShape.strokeWidth
+        : strokeWidth;
+  // The font row follows the Text tool, or a selected text it can restyle.
+  const showFontRow =
+    (drawModeEnabled && tool === "write") || selectedShape?.type === "freetext";
+  const displayedFont =
+    selectedShape?.type === "freetext" ? selectedShape.font : textFont;
+  // Free text's color can be changed after it's written, so show its own.
+  const displayedColor =
+    selectedShape?.type === "freetext" ? selectedShape.color : color;
 
   useEffect(() => {
     redrawSelection();
@@ -1916,6 +2349,158 @@ export function OverlayApp() {
       }
     },
     [commitTextInput, resetDrag],
+  );
+
+  // ── Screenshot workflow ────────────────────────────────────────────────
+
+  /** Discard the screenshot (if any) and go back to Mark screen. */
+  const returnToAnnotate = useCallback(() => {
+    leaveScreenshot();
+    const before = beforeScreenshotRef.current;
+    setTool(before.tool);
+    handleDrawModeToggle(before.drawMode);
+    setUiView("annotate");
+  }, [leaveScreenshot, handleDrawModeToggle]);
+
+  /** Capture the area chosen with the Screenshot tool, then open it for editing. */
+  const captureRegion = useCallback(
+    async (rect: ViewportRect) => {
+      setScreenshot({ phase: "capturing" });
+      setStatusText("");
+      const scroll = { x: window.scrollX, y: window.scrollY };
+      const width = window.innerWidth;
+      try {
+        const image = await loadImage(await captureTab());
+        const ratio = image.naturalWidth / width;
+        const shot: Screenshot = {
+          image,
+          source: {
+            x: rect.x * ratio,
+            y: rect.y * ratio,
+            width: rect.width * ratio,
+            height: rect.height * ratio,
+          },
+          width: rect.width,
+          height: rect.height,
+          ratio,
+        };
+        // Marks already on the page come along as editable copies, moved
+        // into the screenshot's own coordinates.
+        const ox = rect.x + scroll.x;
+        const oy = rect.y + scroll.y;
+        const area = { left: ox, top: oy, right: ox + rect.width, bottom: oy + rect.height };
+        const carried = objectsRef.current
+          .filter((object) => boundsIntersect(annotationBounds(object), area))
+          .map((object) => translateAnnotation(object, -ox, -oy));
+        enterScreenshotDoc(carried);
+        // The Screenshot tool (and the presenting tools) aren't offered on
+        // the screenshot; start with Arrow, the usual first mark.
+        if (LIVE_ONLY_TOOLS.has(toolRef.current)) setTool("arrow");
+        setDrawModeEnabled(true);
+        setScreenshot({ phase: "edit", shot });
+        setUiView("screenshot");
+      } catch (error) {
+        console.error("[Capann] screenshot failed", error);
+        returnToAnnotate();
+        setStatusText(
+          error instanceof Error && error.message
+            ? `Screenshot failed: ${error.message}`
+            : "Screenshot failed",
+        );
+      }
+    },
+    [captureTab, enterScreenshotDoc, returnToAnnotate],
+  );
+
+  const editShot = screenshot?.phase === "edit" ? screenshot.shot : null;
+
+  /** The framed, annotated screenshot at full resolution. */
+  const exportScreenshot = useCallback(() => {
+    if (!editShot) return null;
+    // Flush an open composer so the export has the committed text.
+    commitTextInput();
+    return renderScreenshot(editShot, shotStyle, objectsRef.current);
+  }, [editShot, shotStyle, commitTextInput]);
+
+  const saveScreenshot = useCallback(() => {
+    const canvas = exportScreenshot();
+    if (!canvas) return;
+    const filename = `capann-screenshot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    void chrome.runtime
+      .sendMessage({
+        kind: "download-png",
+        dataUrl: canvas.toDataURL("image/png"),
+        filename,
+      } satisfies ContentToBackgroundMessage)
+      .then(() => setStatusText("Saved!"))
+      .catch(() => setStatusText("Save failed"));
+  }, [exportScreenshot]);
+
+  // Image copy needs a secure page and Chrome's async clipboard.
+  const copyAvailable =
+    window.isSecureContext &&
+    typeof ClipboardItem !== "undefined" &&
+    typeof navigator.clipboard?.write === "function";
+
+  const copyScreenshot = useCallback(() => {
+    const canvas = exportScreenshot();
+    if (!canvas) return;
+    // `write` must be called inside the click (user activation), so it gets a
+    // promise of the PNG rather than waiting for the encode first.
+    const png = new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("encode failed"))),
+        "image/png",
+      ),
+    );
+    navigator.clipboard
+      .write([new ClipboardItem({ "image/png": png })])
+      .then(
+        () => setStatusText("Copied to clipboard"),
+        () => setStatusText("Couldn't copy here. Use Save."),
+      );
+  }, [exportScreenshot]);
+
+  /** Chrome's side panel; must be called from the click (user gesture). */
+  const openSidePanel = useCallback((section: SidePanelSection) => {
+    void chrome.runtime
+      .sendMessage({ kind: "open-side-panel", section } satisfies ContentToBackgroundMessage)
+      .catch(() => undefined);
+  }, []);
+
+  // The frame style is a preference the side panel edits; follow it live.
+  const screenshotOpen = uiView === "screenshot";
+  useEffect(() => {
+    if (!screenshotOpen) return;
+    let cancelled = false;
+    void loadScreenshotStyle().then((style) => {
+      if (!cancelled) setShotStyle(style);
+    });
+    const onChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      area: string,
+    ) => {
+      if (area === "local" && SCREENSHOT_STYLE_KEY in changes)
+        setShotStyle(normalizeStyle(changes[SCREENSHOT_STYLE_KEY]!.newValue));
+    };
+    const onResize = () =>
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    onResize();
+    chrome.storage.onChanged.addListener(onChanged);
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelled = true;
+      chrome.storage.onChanged.removeListener(onChanged);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [screenshotOpen]);
+
+  const shotFit = useMemo(
+    () =>
+      editShot
+        ? fitScreenshot(viewport.width, viewport.height, editShot, shotStyle)
+        : null,
+    [editShot, viewport, shotStyle],
   );
 
   // "Annotate screen" plumbing. The chip (separate root) shows the pencil
@@ -2177,8 +2762,29 @@ export function OverlayApp() {
       redrawObjects();
       redrawSelection();
       if (editorRef.current) positionTextEditor(editorRef.current);
+      freeEditorRef.current?.layout();
     };
   }, [redrawObjects, redrawSelection]);
+
+  // Screenshot editing: point page-space at the fitted screenshot (or back at
+  // the page), then re-apply both canvas transforms and redraw. Runs before
+  // paint, so annotations never flash in the wrong space.
+  useLayoutEffect(() => {
+    setImageSpace(
+      editShot && shotFit
+        ? {
+            originX: shotFit.frameX + shotFit.layout.image.x * shotFit.scale,
+            originY: shotFit.frameY + shotFit.layout.image.y * shotFit.scale,
+            scale: shotFit.scale,
+            width: editShot.width,
+            height: editShot.height,
+          }
+        : null,
+    );
+    handleScrollRef.current();
+  }, [editShot, shotFit]);
+  // Never leave the page drawing in a screenshot's space.
+  useEffect(() => () => setImageSpace(null), []);
   useEffect(() => {
     const onScroll = () => handleScrollRef.current();
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -2201,11 +2807,84 @@ export function OverlayApp() {
     return () => style.remove();
   }, [laserOn]);
 
-  // Handle window pointer move for laser/spotlight
+  // Zoom lens snapshot. The lens shows a capture of the page (taken through
+  // `captureTab`, so the overlay is hidden for it) with the annotations drawn
+  // on top as vectors. Retaken after scrolling, resizing, or clicking the
+  // page, at most about twice a second (Chrome's captureVisibleTab limit).
+  // Each retake hides the overlay for two frames, a brief blink.
+  const zoomActive =
+    drawModeEnabled && tool === "zoom" && overlayVisible && !screenshotOpen;
+  useEffect(() => {
+    if (!zoomActive) {
+      lensSnapshotRef.current = null;
+      return;
+    }
+    let disposed = false;
+    let timer = 0;
+    let lastAt = -Infinity;
+    let inFlight = false;
+    let pending = false;
+    const take = async () => {
+      if (disposed) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      lastAt = performance.now();
+      const scroll = { x: window.scrollX, y: window.scrollY };
+      const width = window.innerWidth;
+      try {
+        const image = await loadImage(await captureTab());
+        if (!disposed)
+          lensSnapshotRef.current = {
+            image,
+            scrollX: scroll.x,
+            scrollY: scroll.y,
+            ratio: image.naturalWidth / width,
+          };
+      } catch {
+        // Keep the previous snapshot; the next trigger tries again.
+      } finally {
+        inFlight = false;
+        if (pending && !disposed) {
+          pending = false;
+          schedule(0);
+        }
+      }
+    };
+    const schedule = (delay: number) => {
+      window.clearTimeout(timer);
+      const wait = Math.max(delay, LENS_RETAKE_GAP_MS - (performance.now() - lastAt));
+      timer = window.setTimeout(() => void take(), wait);
+    };
+    const host = shadowRoot?.host;
+    const onSettle = () => schedule(250);
+    // A click on the page may change it; a click on Capann's panel doesn't.
+    const onClick = (event: MouseEvent) => {
+      if (event.target !== host) schedule(400);
+    };
+    schedule(0);
+    window.addEventListener("scroll", onSettle, { passive: true });
+    window.addEventListener("resize", onSettle);
+    window.addEventListener("click", onClick, true);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("scroll", onSettle);
+      window.removeEventListener("resize", onSettle);
+      window.removeEventListener("click", onClick, true);
+    };
+  }, [zoomActive, captureTab, shadowRoot]);
+
+  // Handle window pointer move for laser/spotlight/zoom
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
       cursorRef.current = { x: e.clientX, y: e.clientY };
-      if (drawModeEnabled && (tool === "laser" || tool === "spotlight")) {
+      if (
+        drawModeEnabled &&
+        (tool === "laser" || tool === "spotlight" || tool === "zoom")
+      ) {
         laserActiveRef.current = true;
         if (tool === "laser") {
           laserTrailRef.current.push({
@@ -2290,6 +2969,47 @@ export function OverlayApp() {
     shadowRoot,
   ]);
 
+  const screenshotEditing = editShot !== null;
+  // The Screenshot tool's drag-to-select layer: Mark screen with the tool on,
+  // and no capture already under way. Never during a recording.
+  const screenshotSelecting =
+    uiView === "annotate" &&
+    drawModeEnabled &&
+    tool === "screenshot" &&
+    screenshot === null &&
+    !annotatingCapture;
+
+  // The side panel's Screenshot tab only works while the tab it's looking at
+  // has a screenshot open. It asks (`screenshot-editing-query`) when it opens
+  // or the active tab changes, and hears changes as they happen. The page is
+  // the only source of truth, so a reload or a closed tab can't leave a stale
+  // flag behind. Only changes are broadcast: an idle page load never wakes the
+  // service worker.
+  const screenshotEditingRef = useRef(false);
+  useEffect(() => {
+    if (screenshotEditingRef.current === screenshotEditing) return;
+    screenshotEditingRef.current = screenshotEditing;
+    void chrome.runtime
+      .sendMessage({
+        kind: "screenshot-editing",
+        editing: screenshotEditing,
+      } satisfies ContentToBackgroundMessage)
+      .catch(() => undefined);
+  }, [screenshotEditing]);
+  useEffect(() => {
+    const onQuery = (
+      message: BackgroundToContentMessage,
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (response: ScreenshotEditingResponse) => void,
+    ) => {
+      if (message?.kind !== "screenshot-editing-query") return false;
+      sendResponse({ editing: screenshotEditingRef.current });
+      return false;
+    };
+    chrome.runtime.onMessage.addListener(onQuery);
+    return () => chrome.runtime.onMessage.removeListener(onQuery);
+  }, []);
+
   // Handle extension action, keyboard, and recorder status messages.
   // Alt+Shift+S (toggle-capann-ui) only toggles draw mode while the panel
   // is open; when closed it opens the chooser. It never closes the panel.
@@ -2307,7 +3027,7 @@ export function OverlayApp() {
           } else if (uiView === "chooser") {
             setUiView("annotate");
             setDrawModeEnabled(true);
-          } else if (uiView === "annotate") {
+          } else if (uiView === "annotate" || screenshotEditing) {
             handleDrawModeToggle(!drawModeEnabled);
           }
           // Record view owns its shortcuts (pause/resume/discard); ignore.
@@ -2369,7 +3089,14 @@ export function OverlayApp() {
 
     chrome.runtime.onMessage.addListener(handleMessage);
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
-  }, [handleClear, cycleTool, uiView, drawModeEnabled, handleDrawModeToggle]);
+  }, [
+    handleClear,
+    cycleTool,
+    uiView,
+    drawModeEnabled,
+    handleDrawModeToggle,
+    screenshotEditing,
+  ]);
 
   // Recording-driven hide, applied to the rendered subtree so React state and
   // the host style above cannot disagree. `savePng` does not go through this:
@@ -2381,11 +3108,14 @@ export function OverlayApp() {
   // Which panel view is on screen. During an annotated capture the panel
   // belongs to the chip's pencil bubble: hidden by default so it never enters
   // the video, and the Annotate view while the bubble has it open.
+  // While choosing a screenshot area (and capturing it) the panel steps aside.
   const shellView: typeof uiView = annotatingCapture
     ? annotatePanelOpen
       ? "annotate"
       : "closed"
-    : uiView;
+    : uiView === "screenshot" && !screenshotEditing
+      ? "closed"
+      : uiView;
   const hidePanelDuringCapture = () => annotateBridge.setPanelOpen(false);
 
   // Closing fades the panel out. The shell unmounts the moment `shellView`
@@ -2410,8 +3140,14 @@ export function OverlayApp() {
     return () => window.clearTimeout(timer);
   }, [shellView]);
   const panelClosing = shellView === "closed" && closingView !== null;
+  // A tool button can unmount under the pointer (view switch, the editor
+  // hiding live-only tools) without a mouseleave; drop its preview then.
+  useEffect(() => {
+    setPreviewTool(null);
+  }, [shellView]);
   const panelView = panelClosing ? closingView : shellView;
   const closeUi = () => {
+    leaveScreenshot();
     setUiView("closed");
     // Closing is the reset point: the panel returns to its docked corner the
     // next time it opens.
@@ -2496,6 +3232,41 @@ export function OverlayApp() {
     </div>
   );
 
+  // Panel header: a hovered tool's name and caption, else the active tool's.
+  const headerTool = previewTool ?? (drawModeEnabled ? tool : null);
+
+  // Shared by the Annotate and Screenshot panels: the same tools either way.
+  const controlProps = {
+    onToolPreview: setPreviewTool,
+    onToolChange: handleToolChange,
+    onColorChange: changeColor,
+    onWidthChange: changeWidth,
+    onWidthEditStart: beginWidthEdit,
+    onWidthEditComplete: finishWidthEdit,
+    onHeadStyleChange: setHeadStyle,
+    onFilledChange: setFilled,
+    onClear: handleClear,
+    onDrawModeToggle: handleDrawModeToggle,
+    onStartTimer: startTimer,
+    onAddMask: addMask,
+    timerOn,
+    maskOn,
+    drawModeEnabled,
+    currentTool: tool,
+    currentColor: displayedColor,
+    currentWidth: displayedWidth,
+    currentHeadStyle: headStyle,
+    currentFilled: filled,
+    statusText,
+    currentFont: displayedFont,
+    onFontChange: changeFont,
+    showFontRow,
+    zoomLevel,
+    lensSize,
+    onZoomLevelChange: setZoomLevel,
+    onLensSizeChange: setLensSize,
+  };
+
   return (
     <>
       <style>{`
@@ -2522,6 +3293,7 @@ export function OverlayApp() {
         .text-composer {
           position: fixed;
           z-index: 2147483647;
+          transform-origin: 0 0;
           font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
           font-weight: 500;
         }
@@ -2601,6 +3373,25 @@ export function OverlayApp() {
         .text-composer-send:not(:disabled):hover {
           transform: scale(1.06);
         }
+        .free-text-composer {
+          position: fixed;
+          z-index: 2147483647;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          outline: 1px dashed rgba(167, 139, 250, 0.9);
+          outline-offset: 5px;
+          border-radius: 2px;
+          resize: none;
+          overflow: hidden;
+          white-space: pre;
+          transform-origin: 0 0;
+        }
+        .free-text-composer::placeholder {
+          color: rgba(139, 139, 147, 0.85);
+          opacity: 1;
+        }
       `}</style>
       <div style={hiddenByCapture}>
         {panelView === "chooser" && (
@@ -2661,16 +3452,18 @@ export function OverlayApp() {
                   Capture this tab with camera and audio
                 </span>
               </button>
+
             </div>
           </CapannShell>
         )}
 
         {panelView === "annotate" && (
           <CapannShell
-            title="Mark screen"
+            title={headerTool ? TOOL_LABELS[headerTool] : "Mark screen"}
             subtitle={
-              drawModeEnabled ? undefined : "Pick a tool to start drawing"
+              headerTool ? TOOL_CAPTIONS[headerTool] : "Pick a tool to start drawing"
             }
+            label="Mark screen"
             showBack={!annotatingCapture}
             onBack={goBackToChooser}
             onClose={annotatingCapture ? hidePanelDuringCapture : closeUi}
@@ -2680,27 +3473,36 @@ export function OverlayApp() {
             closing={panelClosing}
           >
             <AnnotateControls
-              onToolChange={handleToolChange}
-              onColorChange={setColor}
-              onWidthChange={changeWidth}
-              onWidthEditStart={beginWidthEdit}
-              onWidthEditComplete={finishWidthEdit}
-              onHeadStyleChange={setHeadStyle}
-              onFilledChange={setFilled}
-              onClear={handleClear}
+              {...controlProps}
               onSavePng={() => void savePng()}
-              onDrawModeToggle={handleDrawModeToggle}
-              onStartTimer={startTimer}
-              onAddMask={addMask}
-              timerOn={timerOn}
-              maskOn={maskOn}
-              drawModeEnabled={drawModeEnabled}
-              currentTool={tool}
-              currentColor={color}
-              currentWidth={displayedWidth}
-              currentHeadStyle={headStyle}
-              currentFilled={filled}
-              statusText={statusText}
+              hiddenTools={annotatingCapture ? NO_SCREENSHOT_TOOLS : undefined}
+            />
+          </CapannShell>
+        )}
+
+        {panelView === "screenshot" && (
+          <CapannShell
+            title={headerTool ? TOOL_LABELS[headerTool] : "Screenshot"}
+            subtitle={
+              headerTool ? TOOL_CAPTIONS[headerTool] : "Pick a tool to mark it up"
+            }
+            label="Screenshot"
+            showBack
+            onBack={returnToAnnotate}
+            onClose={closeUi}
+            actions={annotateActions}
+            position={panelPosition}
+            onPositionChange={setPanelPosition}
+            closing={panelClosing}
+          >
+            <AnnotateControls
+              {...controlProps}
+              mode="screenshot"
+              hiddenTools={LIVE_ONLY_TOOLS}
+              onSavePng={saveScreenshot}
+              onCopy={copyScreenshot}
+              copyAvailable={copyAvailable}
+              onOpenStyle={() => openSidePanel("screenshot")}
             />
           </CapannShell>
         )}
@@ -3000,8 +3802,9 @@ export function OverlayApp() {
           </div>
         )}
 
-        {/* Mask chip (bottom-left, next to timer) — independent of the active view */}
-        {uiView !== "closed" && maskOn && (
+        {/* Mask chip (bottom-left, next to timer) — independent of the active
+            view, but off while a screenshot is open (it would cover it) */}
+        {uiView !== "closed" && !screenshotOpen && maskOn && (
           <div
             style={{
               position: "fixed",
@@ -3093,8 +3896,8 @@ export function OverlayApp() {
           </div>
         )}
 
-        {/* Mask overlay — independent of the active view */}
-        {uiView !== "closed" && maskOn && (
+        {/* Mask overlay — independent of the active view (not on a screenshot) */}
+        {uiView !== "closed" && !screenshotOpen && maskOn && (
           <div
             style={{
               position: "fixed",
@@ -3106,6 +3909,17 @@ export function OverlayApp() {
               zIndex: 2147483645,
             }}
           />
+        )}
+
+        {/* Screenshot layers sit under the annotation canvases. */}
+        {screenshotSelecting && (
+          <ScreenshotSelector
+            onSelect={(rect) => void captureRegion(rect)}
+            onCancel={() => handleDrawModeToggle(false)}
+          />
+        )}
+        {editShot && shotFit && (
+          <ScreenshotStage shot={editShot} style={shotStyle} fit={shotFit} />
         )}
 
         <div className="canvas-wrapper">

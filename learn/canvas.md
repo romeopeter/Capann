@@ -96,8 +96,8 @@ Annotations move with the page without the canvases growing. The pieces live in
    `clearRect(0, 0, w, h)` would clear the wrong region. `clearCanvas(ctx)`
    resets to the identity transform and clears every pixel.
 
-Some things stay in screen space on purpose: the laser trail and spotlight
-(`setScreenTransform`), the screen mask, and the panel. The comment composer is a
+Some things stay in screen space on purpose: the laser trail, spotlight, and
+zoom lens (`setScreenTransform`), the screen mask, and the panel. The comment composer is a
 `position: fixed` DOM element, so it is repositioned (layout in page
 coordinates, minus scroll) on every scroll.
 
@@ -111,6 +111,13 @@ the spot the user saw when it is committed.
 
 **PNG export** captures only the visible viewport, so `savePng` applies the
 same `setPageTransform` before drawing annotations onto the screenshot.
+
+**Image space.** While a screenshot is edited, `setImageSpace` switches the same
+functions to the screenshot's own pixels: `pagePoint` subtracts the image's
+screen origin and divides by its fit scale, and `setPageTransform` applies that
+scale and origin. Tools, history, and hit testing don't change. DOM composers
+use `screenPoint` for position and `spaceScale` for a CSS `scale()`, and comment
+placement uses the image as its viewport. See [Screenshots](screenshot.md).
 
 ### Limits
 
@@ -132,11 +139,21 @@ same `setPageTransform` before drawing annotations onto the screenshot.
 | Objects canvas | `OverlayApp.tsx` | viewport × dpr | while the overlay is mounted |
 | Live canvas | `OverlayApp.tsx` | viewport × dpr | while the overlay is mounted |
 | PNG composite | `savePng` | viewport × dpr | one export, then garbage-collected |
+| Screenshot stage | `screenshot.tsx` | viewport × dpr | while a screenshot is edited |
+| Screenshot export | `renderScreenshot` | frame × capture ratio | one Copy or Save |
+| Zoom lens snapshot | `OverlayApp.tsx` (an image, not a canvas) | viewport × capture ratio | while the Zoom tool is active; replaced on each retake |
+| Side panel preview | `style-panel.tsx` | panel width × dpr | while the Screenshot tab shows a screenshot's style |
 | Recording compositor | `recorder.ts` | captured tab video size (no dpr factor) | one recording |
 | Camera preview | `recorder.ts` | 480 × 270 | one recording |
 
-The PNG composite and the recorder canvases are short-lived and sized to what
-they output, so they do not accumulate.
+The PNG composite, screenshot export, and recorder canvases are short-lived and
+sized to what they output, so they do not accumulate. The lens keeps exactly
+one snapshot and drops it when the tool is deselected.
+
+"Capture ratio" is captured pixels per CSS pixel, measured from the image
+(`naturalWidth / innerWidth`), not taken from `devicePixelRatio`: the two can
+differ (a page zoom, or a headless browser on a Retina display), and using the
+image's own ratio keeps crops and exports exact.
 
 ## Guidelines when changing canvas code
 

@@ -12,10 +12,16 @@ export type ToolId =
   | "rectangle"
   | "ellipse"
   | "text"
+  /** Free text written straight onto the page (no bubble). */
+  | "write"
   | "select"
   | "laser"
   | "spotlight"
-  | "eraser";
+  /** Magnifier lens that follows the cursor, like the spotlight. */
+  | "zoom"
+  | "eraser"
+  /** Drag over an area to capture it, then mark it up and frame it. */
+  | "screenshot";
 
 export type ArrowHeadStyle = "triangle" | "chevron" | "stick" | "bender";
 
@@ -77,7 +83,25 @@ export interface TextAnnotation extends AnnotationBase {
   bubble?: Point;
 }
 
-export type AnnotationObject = StrokeAnnotation | ArrowAnnotation | ShapeAnnotation | TextAnnotation;
+/** Typeface families for free text. System fonts only: nothing is downloaded. */
+export type TextFont = "sans" | "serif" | "mono" | "hand";
+
+/** Free text: lines written directly on the page, no bubble or tail. */
+export interface FreeTextAnnotation extends AnnotationBase {
+  type: "freetext";
+  /** Top-left of the first line, in page coordinates. */
+  position: Point;
+  text: string;
+  fontSize: number;
+  font: TextFont;
+}
+
+export type AnnotationObject =
+  | StrokeAnnotation
+  | ArrowAnnotation
+  | ShapeAnnotation
+  | TextAnnotation
+  | FreeTextAnnotation;
 
 export interface TabAnnotationState {
   objects: AnnotationObject[];
@@ -215,6 +239,9 @@ export type WebsiteToExtensionMessage =
   | { kind: "capann-session"; token: string }
   | { kind: "capann-refresh" };
 
+/** Tabs of the side panel. "links" exists only in the premium build. */
+export type SidePanelSection = "screenshot" | "links";
+
 export type BackgroundToContentMessage =
   | { kind: "toggle-capann-ui" }
   | { kind: "clear-annotations" }
@@ -224,7 +251,13 @@ export type BackgroundToContentMessage =
   | { kind: "recording-prepare-show" }
   | { kind: "camera-preview-frame"; sessionId: string; dataUrl: string }
   | ({ kind: "recording-permission" } & MediaPermissionState)
-  | { kind: "share-status"; status: ShareJobStatus };
+  | { kind: "share-status"; status: ShareJobStatus }
+  /** From the side panel: is a screenshot open here? Answered with ScreenshotEditingResponse. */
+  | { kind: "screenshot-editing-query" };
+
+export interface ScreenshotEditingResponse {
+  editing: boolean;
+}
 
 export type CaptureVisibleTabResponse =
   | { kind: "capture-visible-tab-result"; dataUrl: string }
@@ -247,12 +280,20 @@ export type ContentToBackgroundMessage =
   | { kind: "record-stop" }
   | { kind: "record-discard" }
   | ({ kind: "record-start" } & RecordOptions)
+  /** Opens Chrome's side panel on one of its tabs (needs the click's gesture). */
+  | { kind: "open-side-panel"; section: SidePanelSection }
+  /**
+   * Broadcast when this tab's screenshot editor opens or closes, for the side
+   * panel (which checks `sender.tab`). The worker ignores it.
+   */
+  | { kind: "screenshot-editing"; editing: boolean }
   // Premium only; the free build never sends these.
   /** `refresh` re-checks `paid` with the server (throttled unless `force`). */
   | { kind: "premium-account"; refresh: boolean; force?: boolean }
   | { kind: "premium-sign-in"; email: string }
   | { kind: "premium-sign-out" }
   | { kind: "premium-upgrade" }
+  /** Premium: opens the side panel on its Links tab. */
   | { kind: "premium-open-links" }
   | { kind: "premium-copy-preference"; preference: CopyPreference }
   | { kind: "share-copy-choice"; sessionId: string; save: boolean; remember: boolean };
@@ -316,10 +357,34 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   rectangle: "Rectangle",
   ellipse: "Ellipse",
   text: "Comment",
+  write: "Text",
   select: "Select",
   laser: "Laser pointer",
   spotlight: "Spotlight",
+  zoom: "Zoom lens",
   eraser: "Eraser",
+  screenshot: "Screenshot",
+};
+
+/**
+ * One line on what each tool does, shown under its name in the panel header
+ * while it is active. Kept short: the header shares its row with the undo,
+ * redo, duplicate, and delete buttons.
+ */
+export const TOOL_CAPTIONS: Record<ToolId, string> = {
+  pencil: "Draw freehand lines",
+  highlighter: "Highlight with a see-through stroke",
+  arrow: "Drag to point at something",
+  rectangle: "Drag to draw a box",
+  ellipse: "Drag to draw a circle",
+  text: "Click to add a comment bubble",
+  write: "Click anywhere and type",
+  select: "Move, resize, or rotate a mark",
+  laser: "Point with a fading red trail",
+  spotlight: "Dim everything but the cursor",
+  zoom: "Magnify what's under the cursor",
+  eraser: "Drag over marks to remove them",
+  screenshot: "Drag over an area to capture it",
 };
 
 export const STORAGE_KEY_PREFIX = "capann_tab_";

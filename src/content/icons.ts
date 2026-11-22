@@ -21,9 +21,12 @@ export const TOOL_ICONS: Record<ToolId, string> = {
   rectangle: 'M4.5 6.5h15v11h-15z',
   ellipse: 'M12 4a8 8 0 100 16 8 8 0 100-16z',
   text: 'M5 6.5h14M12 6.5V19M9 19h6',
+  write: 'M5 6.5h14M12 6.5V19M9 19h6',
   select: 'M5 3l14 11-7 1.5L9 22 5 3z',
   laser: 'M12 9a3 3 0 100 6 3 3 0 100-6zM12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2',
   spotlight: 'M12 4a8 8 0 100 16 8 8 0 100-16zM12 9.5a2.5 2.5 0 100 5 2.5 2.5 0 100-5z',
+  zoom: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L20 20M10.5 8v5M8 10.5h5',
+  screenshot: 'M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M12 9v6M9 12h6',
   eraser: 'M4 14l6-6 6 6-4 4H8l-4-4zM8 20h11',
 };
 

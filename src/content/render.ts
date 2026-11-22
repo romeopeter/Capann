@@ -28,6 +28,7 @@ import {
   textBubbleLayout,
 } from "./text-bubble";
 import { clearCanvas } from "./page-space";
+import { drawFreeText } from "./free-text";
 
 function drawStroke(
   ctx: CanvasRenderingContext2D,
@@ -293,6 +294,9 @@ export function drawAnnotation(
       break;
     case "text":
       drawText(ctx, ann);
+      break;
+    case "freetext":
+      drawFreeText(ctx, ann);
       break;
   }
 }

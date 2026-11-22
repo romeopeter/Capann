@@ -56,14 +56,14 @@ rmSync(dist, { recursive: true, force: true });
 mkdirSync(path.join(dist, 'icons'), { recursive: true });
 mkdirSync(path.join(dist, 'offscreen'), { recursive: true });
 mkdirSync(path.join(dist, 'permissions'), { recursive: true });
+mkdirSync(path.join(dist, 'sidepanel'), { recursive: true });
 
 // The manifest is generated per edition. The free build ships exactly
-// manifest.json; Premium adds only what links need: the side panel, and the
-// website as the one page allowed to hand the extension a sign-in session.
+// manifest.json (which includes the side panel: its Screenshot tab is free);
+// Premium adds only the website, as the one page allowed to hand the
+// extension a sign-in session.
 const manifest = JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 if (premium) {
-  manifest.permissions = [...manifest.permissions, 'sidePanel'];
-  manifest.side_panel = { default_path: 'sidepanel.html' };
   // Match patterns cannot name a port, and a pattern without one matches all,
   // so a localhost dev site still connects.
   const site = new URL(siteUrl);
@@ -75,18 +75,15 @@ for (const file of readdirSync(path.join(root, 'icons'))) {
 }
 copyFileSync(path.join(root, 'src/offscreen/offscreen.html'), path.join(dist, 'offscreen.html'));
 copyFileSync(path.join(root, 'src/permissions/permissions.html'), path.join(dist, 'permissions.html'));
+copyFileSync(path.join(root, 'src/sidepanel/sidepanel.html'), path.join(dist, 'sidepanel.html'));
 
 const entryPoints = {
   'background/service-worker': path.join(root, 'src/background/service-worker.ts'),
   'content/overlay': path.join(root, 'src/content/overlay.tsx'),
   'offscreen/recorder': path.join(root, 'src/offscreen/recorder.ts'),
   'permissions/permissions': path.join(root, 'src/permissions/permissions.ts'),
+  'sidepanel/sidepanel': path.join(root, 'src/sidepanel/sidepanel.tsx'),
 };
-if (premium) {
-  mkdirSync(path.join(dist, 'sidepanel'), { recursive: true });
-  copyFileSync(path.join(root, 'src/sidepanel/sidepanel.html'), path.join(dist, 'sidepanel.html'));
-  entryPoints['sidepanel/sidepanel'] = path.join(root, 'src/sidepanel/sidepanel.tsx');
-}
 
 const options = {
   entryPoints,

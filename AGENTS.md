@@ -5,8 +5,11 @@
 Capann is a Manifest V3 Chrome extension for presenting over a screen share. It
 does two jobs from one in-page overlay:
 
-1. **Annotate** — draw, highlight, point, and comment directly over any web page
-   without modifying the underlying content.
+1. **Annotate** (Mark screen) — draw, highlight, write, point, zoom, and comment
+   directly over any web page without modifying the underlying content. Its
+   **Screenshot** tool selects an area, marks it up with the same tools on a
+   frozen image, frames it (background, padding, corners, shadow, border), then
+   copies or saves a PNG.
 2. **Record** — capture the current tab to a local WebM, optionally with a camera
    bubble, microphone, and tab audio, with the overlay and annotations hidden
    from the frames.
@@ -39,8 +42,8 @@ code and differ only in `capann.config.json`:
   worker. The free build shows one teaser link to the pricing page and nothing
   else.
 - `build.mjs` writes `dist/manifest.json` per edition: free is `manifest.json`
-  unchanged; premium adds the `sidePanel` permission, `side_panel`, and
-  `externally_connectable` for `siteUrl`. `capann.config.json` also holds
+  unchanged (it includes the side panel, whose Screenshot tab is free); premium
+  adds only `externally_connectable` for `siteUrl`. `capann.config.json` also holds
   `apiUrl` and `siteUrl` (`--api-url=` / `--site-url=` override them), and only
   the edition differs between branches.
 - Land shared behavior on `dev` first, then merge `dev` into both edition
@@ -56,10 +59,12 @@ code and differ only in `capann.config.json`:
 - **Highlighter**: Translucent broad strokes
 - **Arrow**: Drag-to-draw arrows with adjustable size and four head styles — triangle, chevron, stick, and **bender** (curved connector)
 - **Shapes**: Rectangle and ellipse with an optional fill
+- **Text** (tool id `write`; annotation type `freetext`): Click anywhere and type straight onto the page, no bubble. Color from the palette, size from the slider, and a Font row (Sans, Serif, Mono, Hand; system fonts only). Click a text with the Text tool to edit it; selecting one lets the palette, slider, and Font row restyle it
 - **Comment** (tool id `text`; Phosphor chat-circle icon): Click to place a Figma-style comment bubble; click it again with the Comment tool to edit
 - **Select**: Hit-test the topmost annotation, then move it, resize it with handles, or rotate it with the knob above the box (Shift snaps to 15°). Shapes store an optional `rotation`; strokes and arrows are rotated by moving their points. Text notes do not rotate
 - **Laser Pointer**: Fading cursor trail that doesn't block page interaction
 - **Spotlight**: Dims everything except a soft circle around the cursor without blocking clicks
+- **Zoom lens** (tool id `zoom`): A round magnifier that follows the cursor like the spotlight, at 1.5×/2×/3× with S/M/L lens sizes; click-through. It shows a snapshot of the tab (retaken after scrolling, resizing, or clicking the page) with annotations redrawn on top as vectors
 - **Eraser**: Remove individual annotations, with a ring cursor matching its reach
 - **Draw mode toggle**: Clicking the active tool deselects it, returning pointer events to the page while annotations stay visible
 
@@ -71,6 +76,13 @@ code and differ only in `capann.config.json`:
 - **Screen Mask**: Cycles Screen/Blackout/Whiteout for focused attention
 - **PNG Export**: Capture the tab composited with annotations (selection frames excluded)
 - **Per-tab Persistence**: Annotations survive tab switches and reloads until cleared
+
+### Screenshot
+- **Screenshot tool** (tool id `screenshot`, last in the second tool row; not a chooser option): while it is active, drag a box over the page (Enter or **Whole screen** takes the visible area; Esc, **Cancel**, or clicking the tool again turns it off). It is not a capturing tool: `ScreenshotSelector` takes the pointer, under the canvases. Marks already on the page come along as editable copies. It is hidden during an annotated recording, since a screenshot can't open then
+- **Editor**: the screenshot is shown framed and scaled to fit, over a dark backdrop, with the normal annotation tools (minus laser, spotlight, and zoom). Its annotations are a separate document: nothing is persisted. Back returns to Mark screen with the page's own annotations untouched and the tool and draw mode from before Screenshot was chosen; Close closes Capann
+- **Frame style** lives in the side panel's Screenshot tab (**Style** opens it): background (11 presets, a custom color, or none = transparent), padding, corner radius, shadow, and border. It is a preference in `chrome.storage.local`, so the editor follows changes live and the next screenshot starts with it
+- **The style controls only work while a screenshot is open** in the window's active tab. Otherwise the tab shows "No screenshot open". The panel asks the page (`screenshot-editing-query`) when it opens or the active tab changes or reloads, and the page broadcasts `screenshot-editing` when its editor opens or closes (only on a change, so idle page loads never wake the worker). The page is the source of truth, so nothing can go stale
+- **Copy** puts the framed PNG on the clipboard (secure pages only); **Save** downloads it. Both render at the capture's resolution through the same `drawFrame` as the preview
 
 ### Recording
 - **Tab capture** of the tab Capann was invoked on, written to a local `.webm`
@@ -93,8 +105,9 @@ Each shortcut changes meaning while a recording is active:
 | `Alt+Shift+S` | Open Capann on this tab | Stop and save |
 | `Alt+Shift+T` | Cycle to the next tool | Pause / resume |
 | `Alt+Shift+C` | Clear annotations on this tab | Discard the recording |
-| `Enter` / `Shift+Enter` | Send a text note / insert a newline | — |
-| Click away from a text note | Send it | — |
+| `Enter` / `Shift+Enter` | Send a comment or text / insert a newline | — |
+| Click away from a comment or text | Send it | — |
+| `Enter` / `Esc` while selecting a screenshot | Take the whole visible area / cancel | — |
 | `Esc` | Exit annotation mode (keeps annotations); while editing, cancel (restore an existing note or discard a new draft) | — |
 | `Ctrl/Cmd+D` | Duplicate the selected annotation (handled in-page, not a manifest command, because Chrome reserves it for bookmarks) | — |
 | `Delete` / `Backspace` | Delete the selected annotation (only while draw mode is on) | — |
@@ -151,8 +164,15 @@ meant to appear in the recording.
 | Path | How it hides | Restores to |
 |---|---|---|
 | Recording | `captureHidden` → host style + subtree wrapper (kept visible, panel unmounted, when **Annotate screen** is on) | — |
-| PNG export | local host style inside `savePng` | `overlayVisible` (`!captureHidden \|\| annotateWhileRecording`) |
+| PNG export | `captureTab`: local host style | `overlayVisible` (`!captureHidden \|\| annotateWhileRecording`) |
+| Screenshot tool | `captureTab`: local host style | `overlayVisible` |
+| Zoom lens snapshot | `captureTab`: local host style (a brief blink, also in an annotated recording) | `overlayVisible` |
 | Recording chip | never hidden — separate `#capann-recording-host` | — |
+
+`captureTab` in `OverlayApp.tsx` is the one implementation of the one-shot
+hide: hide the host synchronously, wait two frames, capture, restore. Captures
+are chained so two can never overlap (an overlapping one would restore the
+host while the other is still reading pixels). Add new capture paths there.
 
 **Annotate screen** (Record view toggle) is the one opt-in exception: annotations
 are meant to appear in the video, so the host stays visible while the Capann panel
@@ -162,6 +182,14 @@ The panel must still never be on screen at the moment the stream ID is minted.
 
 Recording and export deliberately use separate mechanisms: export is a one-shot
 hide, recording is a lifecycle state. Merging them reintroduces the bug above.
+
+**The screenshot document swap.** While a screenshot is edited, `objects`,
+`past`, and `future` hold the screenshot's annotations and the page's are
+parked in `parkedDocRef`; `page-space.ts` maps every tool into the image
+(`setImageSpace`). `scheduleSave` skips while a document is parked, so a
+screenshot's marks never reach the tab's storage, and leaving the screenshot
+(Back/Close) restores the page's document. Any new path that writes `objects`
+or persists them must respect the parked state.
 
 A Premium share job (upload + "Save a copy?") starts only after the capture has
 ended and the overlay is visible again, so it never touches `captureHidden`.
@@ -188,6 +216,7 @@ src/background/
                            lifecycle, downloads, badge, permission routing, stage logging
   premium.ts               Premium account (sign-in, upgrade, refresh), website hand-off
                            (onMessageExternal), share-status relay, link history
+  side-panel.ts            Opens the side panel on a tab (Screenshot / Links)
 src/content/               Content script injected into tabs (React, Shadow DOM)
   overlay.tsx              Shadow DOM setup and React root bootstrap; mounts OverlayApp
                            hidden until recording state is checked, plus the separate
@@ -200,11 +229,16 @@ src/content/               Content script injected into tabs (React, Shadow DOM)
                            "Save a copy?" dialog, free-build teaser
   shell.tsx                Shared draggable panel shell: header, Back/Close, positioning
   annotate-controls.tsx    Annotation controls rendered inside the shell (former Toolbar
-                           body: tools, colors, size, head/fill options, timer, mask)
+                           body: tools, colors, size, head/fill/font/zoom options, timer,
+                           mask; Style/Copy/Save in screenshot mode)
   render.ts                Canvas rendering for all annotation types
   geometry.ts              Bounds, hit tests, and selection/eraser targeting
   text-bubble.ts           Shared text-bubble layout, wrapping, tails, fonts
-  page-space.ts            Page <-> viewport coordinates and canvas transforms for scrolling
+  free-text.ts             Free text (Text tool): fonts, layout, resize, DOM composer
+  zoom-lens.ts             Zoom lens drawing (snapshot + vector annotations)
+  screenshot.tsx           Screenshot selector, framed stage, full-resolution export
+  page-space.ts            Page <-> viewport coordinates and canvas transforms for scrolling;
+                           image space for the screenshot editor
   icons.ts                 SVG path definitions for tool icons
 src/offscreen/
   offscreen.html           Offscreen document entry (loads the IIFE recorder bundle)
@@ -217,11 +251,13 @@ src/permissions/
   permissions.html         Visible one-time camera/microphone grant page (offscreen
                            documents cannot show permission prompts)
   permissions.ts           Requests each enabled device, then reports back
-src/sidepanel/             Premium "Your links" side panel (premium build only)
+src/sidepanel/             Side panel, every build: Screenshot style tab (style-panel.tsx);
+                           premium adds the Links tab (links-panel.tsx)
 src/shared/
   types.ts                 Annotation types, tool ids, recording status/stages/error
                            codes, and all message contracts
   features.ts              Edition gate, API_URL / SITE_URL / PRICING_URL
+  screenshot-style.ts      Screenshot frame style: presets, storage, layout, drawFrame
   premium/api.ts           Backend JSON client (worker + side panel only)
   premium/store.ts         chrome.storage.local: session, copy preference, link history
 scripts/
@@ -251,10 +287,11 @@ backend/                   Separate Cloudflare Worker project (own package.json)
 
 **Canvas Architecture**:
 - Two overlapping HTML5 canvases injected into each tab, scaled by devicePixelRatio, **viewport-sized and fixed** (never page-sized — see `learn/canvas.md` for the memory cost)
-- Annotations are stored in **page coordinates** and scroll with the page: pointer input goes through `pagePoint`, drawing goes through `setPageTransform`, and a scroll listener redraws both layers (`src/content/page-space.ts`). Only window scroll is tracked. Laser and spotlight stay in screen space (`setScreenTransform`)
+- Annotations are stored in **page coordinates** and scroll with the page: pointer input goes through `pagePoint`, drawing goes through `setPageTransform`, and a scroll listener redraws both layers (`src/content/page-space.ts`). Only window scroll is tracked. Laser, spotlight, and the zoom lens stay in screen space (`setScreenTransform`)
+- **Image space**: while a screenshot is edited, `setImageSpace` makes the same functions map to the screenshot's own pixels, shown scaled to fit. Composers position through `screenPoint` and scale with `spaceScale`, and comment placement keeps bubbles inside the image
 - Bottom canvas: persisted annotations; top canvas: current stroke/shape and selection frames
 - Top canvas only receives pointer events (`pointer-events: auto`) while a capturing tool is active, so the page stays usable otherwise
-- Capturing tools: pencil, highlighter, arrow, rectangle, ellipse, text, eraser, select. Laser and spotlight are non-capturing and must never block clicks.
+- Capturing tools: pencil, highlighter, arrow, rectangle, ellipse, text (comment), write (free text), eraser, select. Laser, spotlight, and zoom are non-capturing and must never block clicks.
 
 **Text Bubbles**:
 - Clicking with the text tool opens a DOM composer in the Shadow DOM, anchored to the click point
@@ -266,7 +303,9 @@ backend/                   Separate Cloudflare Worker project (own package.json)
 - Body and tail are one outline (`bubbleOutlinePath`), filled and stroked once, so there is no seam at the tail base
 - With the Select tool, a selected comment shows a knob on its tail tip. Dragging it re-aims the pointer while the bubble stays put: the first drag pins the bubble (`TextAnnotation.bubble`), and the tail then leaves from whichever edge faces the tip. Comments without `bubble` keep automatic above/below placement against the whole page (`pageViewport`), so they do not flip while scrolling. A new comment whose on-screen placement differed from that (near a screen edge) is pinned where it was shown
 
-**PNG Export**: `savePng` hides the shadow host synchronously, waits two animation frames, captures the tab, restores visibility from `captureHidden`, then draws annotations **exactly once** onto the screenshot, offset by the scroll via `setPageTransform`. The screenshot is annotation-free by construction; if the hide step is ever missing, the capture already contains the annotations and they get drawn a second time.
+**Free text**: a `freetext` annotation is lines typed as-is (no wrapping) at a top-left `position`, in one of four system font stacks (`free-text.ts`). The composer is a transparent textarea using the same layout, so text does not move on commit. Resizing scales the font; free text does not rotate.
+
+**PNG Export**: `savePng` captures through `captureTab` (hide the shadow host synchronously, wait two animation frames, capture, restore to `overlayVisible`), then draws annotations **exactly once** onto the screenshot, offset by the scroll via `setPageTransform`. The screenshot is annotation-free by construction; if the hide step is ever missing, the capture already contains the annotations and they get drawn a second time.
 
 **Storage**: `chrome.storage.session`, keyed by tab ID (`capann_tab_<id>`). Cleared on browser close and immediately on Clear. Preserve the "survives reload, not restart" behavior unless explicitly asked otherwise.
 
@@ -278,7 +317,7 @@ backend/                   Separate Cloudflare Worker project (own package.json)
 Any change to a message shape must update every participant. The website
 messages are a contract with the separate website codebase.
 
-**Permissions**: `<all_urls>`, `storage`, `activeTab`, `downloads`, `tabCapture`, `tabs`, `offscreen`; the premium build adds `sidePanel`. No `<all_urls>` alternative works — annotations and PNG capture must function on whatever the presenter is sharing. It also covers the API origin, which is what exempts the worker, offscreen document, and side panel from CORS.
+**Permissions**: `<all_urls>`, `storage`, `activeTab`, `downloads`, `tabCapture`, `tabs`, `offscreen`, `sidePanel` (every edition; it shows no install warning). No `<all_urls>` alternative works — annotations and PNG capture must function on whatever the presenter is sharing. It also covers the API origin, which is what exempts the worker, offscreen document, and side panel from CORS.
 
 ### Recording Internals
 
@@ -373,13 +412,17 @@ There is no separate collapsed circular button any more. `CapannShell` is one dr
 The drag position is owned by `OverlayApp`, not the shell. Each view mounts a different `CapannShell`, so shell-local position state would be discarded on every view switch and snap the panel home. Holding it in the parent keeps the panel where the user put it across chooser → Annotate → Record; closing the panel clears it, and the next open docks top-right again.
 
 **Annotate body** (`annotate-controls.tsx`):
-1. **Main tools** (6-col grid): pencil, highlighter, arrow, rectangle, ellipse, text. Active tool gets `--accent-violet` at ~18% fill with a violet icon. Clicking the active tool turns draw mode off.
-2. **Extra tools** (multi-col grid): select, laser, spotlight, eraser.
-3. **Contextual options**, only when relevant: arrow head style (triangle / chevron / stick / bender) and shape fill toggle.
+1. **Main tools** (7-col grid, last slot empty): pencil, highlighter, arrow, rectangle, ellipse, Text (free text). Active tool gets `--accent-violet` at ~18% fill with a violet icon. Clicking the active tool turns draw mode off.
+2. **Extra tools** (same 7-col grid): Comment, select, laser, spotlight, zoom, eraser, Screenshot. In the screenshot editor, laser, spotlight, zoom, and Screenshot are hidden (`LIVE_ONLY_TOOLS`).
+3. **Contextual options**, only when relevant (one shared `OptionRow`): arrow head style (triangle / chevron / stick / bender), shape fill toggle, Font (Text tool or a selected text, each choice shown in its own face), and Zoom (1.5× / 2× / 3×) plus Lens size (S / M / L).
 4. **Color swatches**: `#EF4444`, `#0A0A0C`, `#FACC15`, `#22C55E`, `#FFFFFF`, plus a custom color picker. Active swatch gets a ring in `--text-primary`.
 5. **Size slider**: track `rgba(255,255,255,0.12)`, fill `--accent-violet`.
 6. **Timer and mask chips** (owned by `OverlayApp`, not the controls): 5/10/15-minute countdown and Screen/Blackout/Whiteout cycling.
-7. **Actions**: "Clear" (ghost, hairline border) and "Save PNG" (`--accent-mint` fill, dark text `#0A2E1B`).
+7. **Actions**: "Clear" (ghost, hairline border) and "Save PNG" (`--accent-mint` fill, dark text `#0A2E1B`). On a screenshot: "Style" and "Copy" (ghost) and "Save" (mint); the timer/mask add-ons are hidden there.
+
+**Side panel** (`src/sidepanel/`): an extension page with the same tokens. A tab bar (only when there is more than one tab) separates **Screenshot** (frame style, every build) from **Links** (premium). Whoever opens it names the tab: `open-side-panel` / `premium-open-links` → `openSidePanel` (background/side-panel.ts) writes the section to `chrome.storage.session`, which the panel follows.
+
+**Annotate header title**: hovering (or keyboard-focusing) a tool previews its name (`TOOL_LABELS`) and what it does (`TOOL_CAPTIONS`, both in `shared/types.ts`) without picking it; otherwise the header shows the active tool the same way, or "Mark screen" and "Pick a tool to start drawing" when none is active. Tool buttons use `aria-label` and `aria-pressed`, with no `title` tooltip repeating the header. The screenshot editor does the same, falling back to "Screenshot". The caption has its own full-width line, so it isn't squeezed by the header actions. The panel's accessible name stays fixed (`CapannShell`'s `label`); the title and caption are polite live regions.
 
 **Annotate header actions**: Undo and Redo (muted when their stack is empty), plus Duplicate and Delete (trash) while an annotation is selected. All four share one 26px `HeaderIcon` button so their hover, disabled, and focus treatment cannot drift apart.
 
@@ -397,7 +440,7 @@ The drag position is owned by `OverlayApp`, not the shell. Each view mounts a di
 - Outputs to `dist/` directory
 - Type checking via `tsc --noEmit` before bundling
 
-Four entry points (five in the premium build), all bundled as IIFE targeting `chrome116`:
+Five entry points, all bundled as IIFE targeting `chrome116`:
 
 | Entry | Output |
 |---|---|
@@ -405,9 +448,9 @@ Four entry points (five in the premium build), all bundled as IIFE targeting `ch
 | `src/content/overlay.tsx` | `dist/content/overlay.js` |
 | `src/offscreen/recorder.ts` | `dist/offscreen/recorder.js` |
 | `src/permissions/permissions.ts` | `dist/permissions/permissions.js` |
-| `src/sidepanel/sidepanel.tsx` (premium) | `dist/sidepanel/sidepanel.js` |
+| `src/sidepanel/sidepanel.tsx` | `dist/sidepanel/sidepanel.js` |
 
-`build.mjs` also writes the edition's manifest (see [Branch Strategy](#branch-strategy)) and copies `icons/`, `src/offscreen/offscreen.html` → `dist/offscreen.html`, `src/permissions/permissions.html` → `dist/permissions.html`, and in the premium build `src/sidepanel/sidepanel.html` → `dist/sidepanel.html`.
+`build.mjs` also writes the edition's manifest (see [Branch Strategy](#branch-strategy)) and copies `icons/`, `src/offscreen/offscreen.html` → `dist/offscreen.html`, `src/permissions/permissions.html` → `dist/permissions.html`, and `src/sidepanel/sidepanel.html` → `dist/sidepanel.html`.
 
 Do not switch the offscreen, permission, or side panel bundles to ESM: their HTML loads them as classic scripts so listeners register as soon as the document parses.
 
@@ -434,7 +477,7 @@ To exercise Premium locally, run the backend (`cd backend && npx wrangler dev --
 - **History-aware mutations**: route every edit to saved annotations through the shared commit path so undo/redo and persistence stay consistent. One completed gesture equals one history entry.
 - **Transient state stays transient**: previews, selection frames, and drag state belong in React state or refs, never in the saved schema
 - **Event handling**: pointer events captured on the top canvas, converted to annotation objects
-- **Pointer discipline**: only capturing tools may set `pointer-events: auto`. Laser and spotlight must remain click-through.
+- **Pointer discipline**: only capturing tools may set `pointer-events: auto`. Laser, spotlight, and zoom must remain click-through.
 - **Shadow DOM isolation**: all UI injected via shadow root to prevent CSS conflicts
 - **Type safety**: strong typing for annotations, tools, recording status, and every message
 - **Styling**: inline styles (no CSS framework) using the tokens above
@@ -453,8 +496,10 @@ To exercise Premium locally, run the backend (`cd backend && npx wrangler dev --
 Manual checks worth running for any non-trivial change:
 1. `npm run typecheck && npm run build`
 2. Annotate: draw each tool, undo/redo, reload the tab and confirm persistence, then Save PNG. In the saved image every object appears exactly once and the Capann panel is not visible.
-3. Record: start with all inputs; confirm the annotation overlay/panel is absent from the video, the chip is visible with a live timer, pause/resume/stop/discard work from the chip, and the camera preview sits at the bottom right.
-4. Record with camera/mic denied: confirm recording still starts and the unavailable notice appears
+3. Text and zoom: write a text, change its font, color, and size, edit it in place; select Zoom and confirm the lens magnifies, follows scrolling, and lets clicks through.
+4. Screenshot: select an area, annotate it, change the style in the side panel (the frame updates live), Copy and Save; then Back and confirm the page's own annotations are unchanged.
+5. Record: start with all inputs; confirm the annotation overlay/panel is absent from the video, the chip is visible with a live timer, pause/resume/stop/discard work from the chip, and the camera preview sits at the bottom right.
+6. Record with camera/mic denied: confirm recording still starts and the unavailable notice appears
 
 ## Implemented Features
 
@@ -469,6 +514,9 @@ Manual checks worth running for any non-trivial change:
 - Premium: email sign-in, upgrade, upload-to-link with auto-copy, "Save a copy?" choice, and a links side panel
 - One-time camera/microphone grant page
 - PNG export composited with annotations
+- Free text (Text tool) with Sans/Serif/Mono/Hand fonts, color, and size
+- Zoom lens (1.5×/2×/3×, S/M/L) that follows the cursor and stays click-through
+- Screenshot: drag-to-select, annotate on a frozen image, frame style in the side panel, Copy/Save
 
 ## Premium Backend
 
@@ -524,9 +572,10 @@ The extension half of Premium (premium build only; everything is behind `PREMIUM
 - **Clipboard.** The page copies the link with `navigator.clipboard` as soon as
   it exists. That needs the tab focused; otherwise the card shows a Copy button.
   There is no `clipboardWrite` permission on purpose (it adds an install warning).
-- **Side panel.** `premium-open-links` calls `sidePanel.open()` synchronously in
-  the message handler (it needs the click's user gesture) and falls back to
-  opening `sidepanel.html` in a tab.
+- **Side panel.** The Links tab of the shared side panel. `premium-open-links`
+  calls `openSidePanel(sender, "links")` (background/side-panel.ts), which runs
+  `sidePanel.open()` synchronously in the message handler (it needs the click's
+  user gesture) and falls back to opening `sidepanel.html#links` in a tab.
 
 ## Explicitly Out of Scope
 

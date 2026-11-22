@@ -25,8 +25,9 @@ try {
   console.error("Build output missing. Run `npm run build` first.");
   process.exit(1);
 }
-// The premium manifest declares the side panel; the free one is manifest.json.
-const edition = JSON.parse(readFileSync(path.join(root, "dist/manifest.json"), "utf8")).side_panel
+// Only the premium manifest lets the website connect; free is manifest.json.
+const edition = JSON.parse(readFileSync(path.join(root, "dist/manifest.json"), "utf8"))
+  .externally_connectable
   ? "premium"
   : "free";
 console.log(`Testing the ${edition} build`);
