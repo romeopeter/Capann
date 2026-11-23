@@ -154,9 +154,11 @@ npm run website:lint
 
 - API: see [`apps/api/README.md`](apps/api/README.md); `npm run api:deploy` runs
   `wrangler deploy`.
-- Website: `npm run website:deploy` builds and publishes to the `gh-pages`
-  branch of `romeopeter/capann-website`, where GitHub Pages and the custom
-  domain are configured.
+- Website: GitHub Actions ([`.github/workflows/website.yml`](.github/workflows/website.yml))
+  builds `apps/website` and publishes it to this repository's GitHub Pages at
+  `https://capann.duowork.tech` on every push to `main` that touches the site
+  or the shared packages. The workflow's header lists the one-time repository
+  settings (Pages source, custom domain, and the `VITE_CAPANN_*` variables).
 
 ## Project layout
 

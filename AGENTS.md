@@ -57,11 +57,13 @@ code that crosses between them lives in `packages/`.
 - **Root scripts:** `npm run typecheck` (every workspace); `build`, `build:free`,
   `build:premium`, `build:backend`, `watch*` (extension); `test:wiring`,
   `test:premium`; `api:dev`, `api:test`, `api:deploy`; `website:dev`,
-  `website:build`, `website:preview`, `website:lint`, `website:deploy`.
-- **Deploys:** the API with `npm run api:deploy` (Wrangler). The website with
-  `npm run website:deploy`, which publishes `apps/website/dist` to the
-  `gh-pages` branch of the old `romeopeter/capann-website` repository: GitHub
-  Pages and the custom domain are still configured there.
+  `website:build`, `website:preview`, `website:lint`.
+- **Deploys:** the API with `npm run api:deploy` (Wrangler). The website is
+  deployed by GitHub Actions (`.github/workflows/website.yml`) to this
+  repository's GitHub Pages: every push to `main` that touches
+  `apps/website/`, `packages/`, or the lockfile lints, typechecks, builds, and
+  publishes it, or run it by hand from the Actions tab. Its `VITE_CAPANN_*`
+  values are repository variables, not files. There is no local deploy command.
 
 **Paths in this file:** unless a path starts with `apps/` or `packages/`,
 extension paths (`src/…`, `scripts/…`, `manifest.json`, `capann.config.json`,

@@ -23,7 +23,6 @@
     "website:dev": "npm run dev -w @capann/website",
     "website:build": "npm run build -w @capann/website",
     "website:preview": "npm run preview -w @capann/website",
-    "website:lint": "npm run lint -w @capann/website",
-    "website:deploy": "npm run deploy -w @capann/website"
+    "website:lint": "npm run lint -w @capann/website"
   }
 }

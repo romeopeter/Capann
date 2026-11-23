@@ -22,7 +22,11 @@ npm run website:dev      # local dev server (http://localhost:5173)
 npm run website:build    # production build to apps/website/dist (+ 404.html SPA fallback)
 npm run website:lint     # oxlint
 npm run typecheck        # includes this site's Premium helpers (src/premium/*.js)
-npm run website:deploy   # build + publish to romeopeter/capann-website's gh-pages branch
 ```
+
+Deploys are automatic: `.github/workflows/website.yml` publishes the site to
+this repository's GitHub Pages (`https://capann.duowork.tech`) on every push to
+`main` that touches it. The deployed site's `VITE_CAPANN_*` values are GitHub
+Actions variables (Settings → Secrets and variables → Actions → Variables).
 
 (`npm run dev`, `build`, and so on also work from inside `apps/website`.)

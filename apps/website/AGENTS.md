@@ -26,15 +26,15 @@ Install once at the repository root (`npm install`). From the root:
 - `npm run website:preview` — serve `dist/` locally
 - `npm run website:lint` — oxlint
 - `npm run typecheck` — every workspace, including this site's Premium helpers
-- `npm run website:deploy` — build + publish `dist/` to the `gh-pages` branch of `romeopeter/capann-website` (`predeploy` runs the build)
 
-The same scripts without the `website:` prefix work from inside `apps/website`.
+The same scripts without the `website:` prefix work from inside `apps/website`. There is no deploy script: GitHub Actions deploys the site (below).
 
 ## Deployment
-Deployed at `https://capann.duowork.tech`. The source now lives in the Capann monorepo; the old `romeopeter/capann-website` repository is kept as the deploy target, because GitHub Pages and the custom domain are configured there. `deploy` passes `--repo` explicitly: without it, `gh-pages` would publish to the monorepo's own `gh-pages` branch.
-- `vite.config.js` sets `base: '/'` for the custom domain. If the site moves back under GitHub Project Pages, update `base` to `/capann-website/` and the deploy target together.
+Deployed at `https://capann.duowork.tech` from the monorepo's own GitHub Pages by `.github/workflows/website.yml`. Every push to `main` that touches `apps/website/`, `packages/`, the root `package.json`, or the lockfile runs `npm ci`, lint, the website typecheck, and the build, then publishes `dist/`; it can also be run by hand from the Actions tab (the `github-pages` environment only accepts `main` unless its branch rules are widened).
+- One-time repository settings (listed at the top of the workflow): Pages source "GitHub Actions", custom domain `capann.duowork.tech` with HTTPS enforced, and the Actions **variables** `VITE_CAPANN_API_URL`, `VITE_CAPANN_EXTENSION_IDS`, `VITE_CAPANN_INSTALL_URL`. CI has no `.env.production` (it is gitignored), so those variables are what the deployed site gets; the workflow warns when `VITE_CAPANN_EXTENSION_IDS` is empty, since Premium sign-in can't finish without it.
+- The custom domain is a Pages setting, so no `CNAME` file is needed in `public/`. DNS (at WhoGoHost): `capann.duowork.tech` must be a CNAME to the repository owner's Pages host, `<owner>.github.io` (`romeopeter.github.io` while the repo is `romeopeter/Capann`).
+- `vite.config.js` sets `base: '/'` for the custom domain. If the site ever moves to a project path (`romeopeter.github.io/Capann/`), `base` must change with it.
 - `postbuild` writes `dist/404.html` as an SPA fallback so deep links like `/playground` and `/privacy` boot the router on static hosting.
-- After `npm run deploy`, Pages must serve from the `gh-pages` branch (one-time repo-settings step).
 - `index.html` asset URLs are rewritten by Vite automatically; **hardcoded absolute public paths in JSX break under a non-root base** — always prefix with `import.meta.env.BASE_URL` (see the logo `<img>` usage in `src/pages/LandingPage.jsx` and `src/pages/PlaygroundPage.jsx`).
 
 ## Styling rules

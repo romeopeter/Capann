@@ -9,8 +9,6 @@
     "postbuild": "node scripts/copy-404.mjs",
     "lint": "oxlint",
     "preview": "vite preview",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist --repo https://github.com/romeopeter/capann-website.git",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
@@ -27,7 +25,6 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "gh-pages": "^6.3.0",
     "oxlint": "^1.88.0",
     "typescript": "^5.6.3",
     "vite": "^8.3.4"
