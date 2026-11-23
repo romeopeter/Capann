@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
-import { findExtension, sendToExtension } from '../premium/extension.js'
+import { findExtension, refreshExtension } from '../premium/extension.js'
 import { usePrivatePage } from '../premium/usePrivatePage.js'
 import { Card, Notice, PageHeading, PremiumLayout, SECONDARY_BUTTON, StatusLine } from '../premium/PremiumLayout.jsx'
 
@@ -48,7 +48,7 @@ export default function UpgradedPage() {
       for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
         let reply
         try {
-          reply = await sendToExtension(found.id, { kind: 'capann-refresh' }, REFRESH_TIMEOUT_MS)
+          reply = await refreshExtension(found.id, REFRESH_TIMEOUT_MS)
         } catch {
           // No reply (removed, disabled, or timed out).
           if (active) setState({ status: 'no-extension' })

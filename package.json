@@ -1,7 +1,7 @@
 {
   "name": "capann-monorepo",
   "private": true,
-  "description": "Capann: the Chrome extension (apps/extension), its Premium API (apps/api), and the code they share (packages/).",
+  "description": "Capann: the Chrome extension (apps/extension), its Premium API (apps/api), the website (apps/website), and the code they share (packages/).",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -19,6 +19,10 @@
     "test:premium": "npm run test:premium -w @capann/extension",
     "api:dev": "npm run dev -w @capann/api",
     "api:test": "npm run test:e2e -w @capann/api",
-    "api:deploy": "npm run deploy -w @capann/api"
+    "api:deploy": "npm run deploy -w @capann/api",
+    "website:dev": "npm run dev -w @capann/website",
+    "website:build": "npm run build -w @capann/website",
+    "website:preview": "npm run preview -w @capann/website",
+    "website:lint": "npm run lint -w @capann/website"
   }
 }

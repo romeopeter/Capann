@@ -9,7 +9,7 @@
 5. Update this handbook when a change alters architecture, annotation behavior, storage, or the contributor workflow.
 6. Run `npm run typecheck` and `npm run build` before handing off the change.
 
-For backend changes (`apps/api/`), follow the rules in [Premium backend](backend.md#rules-when-changing-the-backend), run `npm run typecheck` (every workspace) and `npm run api:test`, and treat any change to a request or response shape as a contract change: change `@capann/contract` first, then the API and the extension until both typecheck, then the website (a separate repository) and `apps/api/README.md`. The extension's client is `@capann/api-client` plus `src/offscreen/uploader.ts`; `npm run test:premium` runs them against `wrangler dev`.
+For backend changes (`apps/api/`), follow the rules in [Premium backend](backend.md#rules-when-changing-the-backend), run `npm run typecheck` (every workspace) and `npm run api:test`, and treat any change to a request or response shape as a contract change: change `@capann/contract` first, then the API, the extension, and the website until `npm run typecheck` passes, then `apps/api/README.md`. The extension's client is `@capann/api-client` plus `src/offscreen/uploader.ts`; `npm run test:premium` runs them against `wrangler dev`.
 
 **Where new code goes.** Code that only one app runs stays in that app (`apps/extension` or `apps/api`). Put it in `packages/` only when two sides must agree on it: shapes, codes, routes, or limits go in `@capann/contract` (types and constants, no imports, no DOM/chrome/Workers types); browser-side API calls go in `@capann/api-client`. Never move server-only logic (secrets, signing, storage) into a package a client imports.
 

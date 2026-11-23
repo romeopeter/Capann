@@ -27,6 +27,7 @@ code that crosses between them lives in `packages/`.
 |---|---|---|
 | `apps/extension/` | `@capann/extension` | The Chrome extension (everything under [Architecture](#architecture)) |
 | `apps/api/` | `@capann/api` | The Premium Cloudflare Worker ([Premium Backend](#premium-backend)) |
+| `apps/website/` | `@capann/website` | The website at capann.duowork.tech: landing, playground, privacy, and the Premium pages `/verify`, `/view-my-links`, `/upgraded` (its own `AGENTS.md`) |
 | `packages/contract/` | `@capann/contract` | What crosses a boundary: API request/response types, error codes, route paths, limits, website → extension messages and replies |
 | `packages/api-client/` | `@capann/api-client` | fetch client for the API's JSON routes, plus `ApiError`; used by the extension, usable by the website |
 
@@ -44,12 +45,25 @@ code that crosses between them lives in `packages/`.
   upload progress), and the edition system; the API's secrets, JWT signing,
   storage, rate limiting, and Bachs code. Never move server-only logic into a
   package a client imports.
-- **The website is a separate repository.** It keeps a copy of the contract
-  parts it uses (`WEBSITE_PATHS`, `WebsiteToExtensionMessage` and its replies,
-  the link-list and session shapes).
+- **The website is JavaScript** (Vite + React). It calls the API through
+  `@capann/api-client`, routes `WEBSITE_PATHS`, and builds every
+  website → extension message in `src/premium/extension.js`, whose JSDoc types
+  come from the contract; `npm run typecheck` checks that file, so a changed
+  message or reply breaks the build there too.
+- **One React version across apps.** Shared UI packages (Phosphor icons) are
+  hoisted to the root and bind to the root `react`. If two apps pin different
+  React versions, one gets a nested copy and its bundle ends up with two
+  Reacts ("Invalid hook call"). Upgrade React in every app together.
 - **Root scripts:** `npm run typecheck` (every workspace); `build`, `build:free`,
   `build:premium`, `build:backend`, `watch*` (extension); `test:wiring`,
-  `test:premium`; `api:dev`, `api:test`, `api:deploy`.
+  `test:premium`; `api:dev`, `api:test`, `api:deploy`; `website:dev`,
+  `website:build`, `website:preview`, `website:lint`.
+- **Deploys:** the API with `npm run api:deploy` (Wrangler). The website is
+  deployed by GitHub Actions (`.github/workflows/website.yml`) to this
+  repository's GitHub Pages: every push to `main` that touches
+  `apps/website/`, `packages/`, or the lockfile lints, typechecks, builds, and
+  publishes it, or run it by hand from the Actions tab. Its `VITE_CAPANN_*`
+  values are repository variables, not files. There is no local deploy command.
 
 **Paths in this file:** unless a path starts with `apps/` or `packages/`,
 extension paths (`src/…`, `scripts/…`, `manifest.json`, `capann.config.json`,
@@ -73,8 +87,8 @@ code and differ only in `capann.config.json`:
   `watch:free` / `watch:premium` do. Use those on `dev` to test either edition.
 - Annotation and instant tab recording are free in every edition. Premium is
   reserved for the browser-AI layer and shareable cloud links. Links are built
-  in the extension and `apps/api/`; the website's `/verify` and `/view-my-links`
-  pages are not built yet. `src/shared/features.ts` derives `PREMIUM_ENABLED`
+  across the extension, `apps/api/`, and the website's `/verify`,
+  `/view-my-links`, and `/upgraded` pages (`apps/website/`). `src/shared/features.ts` derives `PREMIUM_ENABLED`
   from the edition; gate Premium features on it in both the UI and the service
   worker. The free build shows one teaser link to the pricing page and nothing
   else.
@@ -575,14 +589,13 @@ response shape, error code, route path, and limit the two agree on.
 - **Retention**: R2 lifecycle deletes both prefixes after 7 days (`apps/api/r2-lifecycle.json`);
   the Worker also refuses anything older than 7 days, because lifecycle deletion lags.
 - **Uploads re-check KV**, not the session's `paid` claim, which can be 30 days stale.
-- **Clients**: the extension side is built (see below); the website's `/verify` and
-  `/view-my-links` are not.
+- **Clients**: the extension (see below) and the website's `/verify`,
+  `/view-my-links`, and `/upgraded` (`apps/website/src/pages/`).
 - **Bachs' webhook format is unverified.** It is isolated in `apps/api/src/bachs.ts`; confirm
   it against Bachs' documentation before launch.
 - Run `npm run typecheck` (every workspace) and `npm run api:test` after backend changes.
   Change a route's request or response shape in `@capann/contract` first: the
-  extension then fails to typecheck until it is updated too. The website (a
-  separate repository) must be updated by hand.
+  extension and the website then fail to typecheck until they are updated too.
 
 ## Premium Share Links
 

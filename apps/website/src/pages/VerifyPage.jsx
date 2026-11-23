@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { ArrowClockwise, ArrowRight, CheckCircle } from '@phosphor-icons/react'
-import { ApiError, callApi } from '../premium/api.js'
-import { ExtensionUnreachableError, findExtension, sendToExtension } from '../premium/extension.js'
+import { ApiError, exchangeLoginToken } from '@capann/api-client'
+import { API_URL } from '../premium/config.js'
+import { ExtensionUnreachableError, findExtension, handOffSession } from '../premium/extension.js'
 import { usePrivatePage } from '../premium/usePrivatePage.js'
 import {
   Card,
@@ -126,7 +127,7 @@ export default function VerifyPage() {
       if (!session) {
         setPhase({ step: 'exchanging' })
         try {
-          session = await callApi('/api/auth/verify', { method: 'POST', body: { token } })
+          session = await exchangeLoginToken(API_URL, token)
         } catch (error) {
           setPhase({ step: 'error', ...exchangeFailure(error) })
           return
@@ -136,7 +137,7 @@ export default function VerifyPage() {
 
       setPhase({ step: 'handing-off' })
       try {
-        const reply = await sendToExtension(found.id, { kind: 'capann-session', token: session.token }, HANDOFF_TIMEOUT_MS)
+        const reply = await handOffSession(found.id, session.token, HANDOFF_TIMEOUT_MS)
         if (!reply?.ok) throw new Error(reply?.error)
         sessionRef.current = null
         setPhase({ step: 'done', email: reply.email ?? session.email, paid: reply.paid ?? session.paid })

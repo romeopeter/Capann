@@ -1,0 +1,73 @@
+# Builds apps/website and publishes it to GitHub Pages (https://capann.duowork.tech).
+#
+# One-time repository settings:
+#   - Settings → Pages → Source: "GitHub Actions"; custom domain capann.duowork.tech;
+#     Enforce HTTPS. (No CNAME file is needed: the domain is a Pages setting.)
+#   - Settings → Secrets and variables → Actions → Variables: VITE_CAPANN_API_URL,
+#     VITE_CAPANN_EXTENSION_IDS, VITE_CAPANN_INSTALL_URL. They are public (Vite puts
+#     every VITE_ value in the browser bundle), so they are variables, not secrets.
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/website/**
+      - packages/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/website.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer push waits rather than cancelling one in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      VITE_CAPANN_API_URL: ${{ vars.VITE_CAPANN_API_URL }}
+      VITE_CAPANN_EXTENSION_IDS: ${{ vars.VITE_CAPANN_EXTENSION_IDS }}
+      VITE_CAPANN_INSTALL_URL: ${{ vars.VITE_CAPANN_INSTALL_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check site variables
+        run: |
+          [ -n "$VITE_CAPANN_API_URL" ] || echo "::notice::VITE_CAPANN_API_URL is not set; the site uses https://api.capann.duowork.tech."
+          [ -n "$VITE_CAPANN_EXTENSION_IDS" ] || echo "::warning::VITE_CAPANN_EXTENSION_IDS is not set; /verify will not find the extension, so Premium sign-in cannot finish."
+          [ -n "$VITE_CAPANN_INSTALL_URL" ] || echo "::notice::VITE_CAPANN_INSTALL_URL is not set; install links point to /#pricing."
+
+      - run: npm run website:lint
+      - run: npm run typecheck -w @capann/website
+      # Also writes dist/404.html (postbuild), the SPA fallback for deep links.
+      - run: npm run website:build
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: apps/website/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

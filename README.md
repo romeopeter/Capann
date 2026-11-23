@@ -12,10 +12,9 @@ This repository is an npm-workspaces monorepo:
 |---|---|
 | [`apps/extension/`](apps/extension) | The Chrome extension |
 | [`apps/api/`](apps/api/README.md) | The Premium API (Cloudflare Worker) |
+| [`apps/website/`](apps/website/README.md) | The website: landing, playground, and the Premium sign-in and link pages |
 | [`packages/contract/`](packages/contract/src/index.ts) | What the extension, API, and website agree on: request/response types, error codes, routes, limits, website → extension messages |
-| [`packages/api-client/`](packages/api-client/src/index.ts) | fetch client for the API, used by the extension |
-
-The website (`/verify`, `/view-my-links`, pricing) is a separate repository.
+| [`packages/api-client/`](packages/api-client/src/index.ts) | fetch client for the API, used by the extension and the website |
 
 ## Features
 
@@ -143,10 +142,23 @@ npm run test:premium   # the extension's Premium client (api-client + uploader) 
 `apps/extension/scripts/smoke-test.mjs` is out of date (hard-wired to another
 machine's paths).
 
-### Deploy the API
+### Website
 
-See [`apps/api/README.md`](apps/api/README.md); `npm run api:deploy` runs
-`wrangler deploy`.
+```
+npm run website:dev      # http://localhost:5173 (the origin the local extension build trusts)
+npm run website:build    # apps/website/dist (+ 404.html SPA fallback)
+npm run website:lint
+```
+
+### Deploy
+
+- API: see [`apps/api/README.md`](apps/api/README.md); `npm run api:deploy` runs
+  `wrangler deploy`.
+- Website: GitHub Actions ([`.github/workflows/website.yml`](.github/workflows/website.yml))
+  builds `apps/website` and publishes it to this repository's GitHub Pages at
+  `https://capann.duowork.tech` on every push to `main` that touches the site
+  or the shared packages. The workflow's header lists the one-time repository
+  settings (Pages source, custom domain, and the `VITE_CAPANN_*` variables).
 
 ## Project layout
 
@@ -159,6 +171,7 @@ packages/contract/       Shared types, error codes, routes, limits (imports noth
 packages/api-client/     fetch client for the API
 
 apps/api/                Premium API: Cloudflare Worker, R2, KV, Durable Object (see its README)
+apps/website/            Website (Vite + React + Tailwind; see its README and AGENTS.md)
 
 apps/extension/
 manifest.json            Extension manifest (copied into dist/)

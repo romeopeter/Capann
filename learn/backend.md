@@ -10,10 +10,11 @@ response shapes, error codes, route paths, limits) lives in `@capann/contract`
 This note explains how the backend is designed and why. For setup, deploy
 commands, and the full route table, see [`apps/api/README.md`](../apps/api/README.md).
 
-> **Status:** the Worker and the extension client are built and pass end-to-end
-> suites locally ([Premium share links](premium.md) covers the extension). The
-> website pages are not built yet, and the Bachs webhook format is unverified
-> (see [Open items](#open-items)).
+> **Status:** the Worker, the extension client, and the website's Premium pages
+> (`apps/website`) are built and pass end-to-end suites locally, including the
+> real sign-in hand-off between the three ([Premium share links](premium.md)
+> covers the extension). The Bachs webhook format is unverified (see
+> [Open items](#open-items)).
 
 ## No accounts, by design
 
@@ -187,8 +188,8 @@ so uploads must come from the offscreen document or service worker.
 4. **Public URLs contain only `<uuid>.<ext>`** — no email, no hash, no index key.
 5. **Counters and once-only decisions go in the Durable Object**, not KV.
 6. **A change to a request or response shape is a contract change.** Change
-   `@capann/contract` first; the extension then fails to typecheck until it is
-   updated in the same change. Update the website (a separate repository) and
+   `@capann/contract` first; the extension and the website then fail to
+   typecheck until they are updated in the same change. Update
    `apps/api/README.md` too.
 7. **Keep processor-specific code in `apps/api/src/bachs.ts`**, so swapping or
    fixing the payment integration touches one file.
@@ -216,14 +217,8 @@ recovery, the rate limit, cancellation, and CORS. It does **not** cover the
   event names in `apps/api/src/bachs.ts` are assumptions listed at the top of the
   file. Confirm them against Bachs' documentation before launch, along with the
   `{email}` placeholder in `BACHS_CHECKOUT_URL`.
-- **The website isn't built.** It needs `/verify` and `/view-my-links`. The
-  extension side is done, including its half of the hand-off:
-  - `/verify` should exchange the token on a button click, not on page load —
-    email security scanners open links, and could spend the single-use token.
-  - It then sends `{ kind: "capann-session", token }` with
-    `chrome.runtime.sendMessage(extensionId, …)`. The premium build's manifest
-    lists `siteUrl` under `externally_connectable`, and the worker accepts the
-    message only from that origin. `{ kind: "capann-ping" }` detects whether the
-    extension is installed; `{ kind: "capann-refresh" }` re-checks `paid`
-    (useful on a post-checkout page).
+- **The website's production config.** `apps/website/.env.production` (gitignored)
+  needs the Chrome Web Store extension ID in `VITE_CAPANN_EXTENSION_IDS` before
+  sign-in can hand off a session in production, and `VITE_CAPANN_INSTALL_URL`
+  once the listing exists.
 - **Not deployed.** Nothing has run against real Cloudflare, Resend, or Bachs.

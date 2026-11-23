@@ -3,13 +3,12 @@
  *
  * Everything that crosses a boundary between Capann's pieces:
  *
- *   apps/extension  <── HTTP JSON ──>  apps/api
- *   website (separate repo)  ── chrome.runtime.sendMessage ──>  apps/extension
+ *   apps/extension  <── HTTP JSON ──>  apps/api  <── HTTP JSON ──  apps/website
+ *   apps/website  ── chrome.runtime.sendMessage ──>  apps/extension
  *
- * Both sides import these definitions, so changing a shape on one side fails
- * the other side's typecheck instead of shipping a mismatch. The website lives
- * in its own repository and keeps a copy of the parts it uses; the comments on
- * those parts say so.
+ * Every side imports these definitions, so changing a shape on one side fails
+ * the others' typecheck instead of shipping a mismatch. (The website is
+ * JavaScript; its Premium code is checked against these types through JSDoc.)
  *
  * Rules: types and constants only, no runtime dependencies, and no DOM,
  * chrome, or Workers types (this package's tsconfig loads none), so the
@@ -64,8 +63,8 @@ export const RECORDING_ROUTE_PREFIX = "/r/";
 export type MagicLinkPurpose = "login" | "links";
 
 /**
- * Website pages the emailed links open (`?token=…`). The website repository
- * implements them; keep its routes in step with these.
+ * Website pages the emailed links open (`?token=…`). The API builds the links
+ * from these, and the website routes them (apps/website/src/App.jsx).
  */
 export const WEBSITE_PATHS: Record<MagicLinkPurpose, string> = {
   login: "/verify",
@@ -202,7 +201,6 @@ export type Edition = "free" | "premium";
 /**
  * Sent by the website with `chrome.runtime.sendMessage(extensionId, …)` from a
  * page on the origin the premium manifest lists in `externally_connectable`.
- * The website repository keeps a copy of these messages and their replies.
  */
 export type WebsiteToExtensionMessage =
   | { kind: "capann-ping" }
@@ -219,3 +217,10 @@ export type SessionReply = { ok: true; email: string; paid: boolean } | Extensio
 
 /** Reply to `capann-refresh`: `paid` re-checked (after checkout). */
 export type RefreshReply = { ok: true; signedIn: boolean; paid: boolean } | ExtensionReplyFailure;
+
+/** The reply type for a given website message. */
+export type ReplyTo<M extends WebsiteToExtensionMessage> = M extends { kind: "capann-ping" }
+  ? PingReply
+  : M extends { kind: "capann-session" }
+    ? SessionReply
+    : RefreshReply;

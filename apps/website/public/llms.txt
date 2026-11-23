@@ -8,5 +8,5 @@
 - **Annotations** float above the webpage and never permanently modify the underlying page.
 - **Browsers:** Chromium-based — Chrome, Edge, Brave.
 - **Maker:** [Duowork](https://duowork.tech) — "We build engines around how people and businesses work."
-- **Site:** [https://romeopeter.github.io/capann-website/](https://romeopeter.github.io/capann-website/)
+- **Site:** [https://capann.duowork.tech/](https://capann.duowork.tech/)
 - **Shortcuts:** Alt+Shift+S toggle draw mode · Alt+Shift+T next tool · Alt+Shift+C clear · Esc exit draw mode
